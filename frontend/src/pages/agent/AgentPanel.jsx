@@ -13,6 +13,27 @@ import { useAgentSession, useAgentThread } from './useAgentThread'
 const TOOL_LABELS = {
   extract_document: 'Reading report',
   propose_chain_draft: 'Drafting attack chain',
+  websearch: 'Searching the web',
+  webfetch: 'Reading page',
+  get_cve_info: 'Looking up CVE',
+}
+
+const RESEARCH_TOOLS = ['websearch', 'webfetch', 'get_cve_info']
+
+// one muted line per research tool: the call's target plus what came back
+const researchDetail = (part) => {
+  const args = part.args || {}
+  const target = args.query ?? args.url ?? args.cve_id ?? ''
+  const summary = String(part.result?.summary || '')
+  if (part.toolName === 'websearch') {
+    const count = summary.match(/Found (\d+)/)
+    return count ? `${target} · ${count[1]} result(s)` : target
+  }
+  if (part.toolName === 'webfetch') {
+    const chars = summary.match(/Length: (\d+)/)
+    return chars ? `${target} · ${chars[1]} chars` : target
+  }
+  return target
 }
 
 const MODES = ['ask', 'plan', 'edit']
@@ -422,6 +443,9 @@ const ToolCard = ({ part }) => {
         <div className="mt-1 text-muted">
           {result.steps} step(s) · {result.status}
         </div>
+      )}
+      {RESEARCH_TOOLS.includes(part.toolName) && (
+        <div className="mt-1 truncate text-muted">{researchDetail(part)}</div>
       )}
     </div>
   )
