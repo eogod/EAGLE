@@ -378,10 +378,9 @@ async def edit_chain(
     return text
 
 
-async def _draft_chain(
-    request: AnalysisRequest, findings: list[dict[str, Any]], warnings: list[str]
-) -> dict[str, Any]:
-    payload_findings = [
+def _payload_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """compact finding shape fed to the draft prompt"""
+    return [
         {
             "id": f["id"],
             "title": f["title"],
@@ -392,6 +391,33 @@ async def _draft_chain(
         }
         for f in findings
     ]
+
+
+def _has_placeholder(draft: dict[str, Any]) -> bool:
+    """validation flagged an unfilled value in some step command"""
+    block = draft.get("validation") or {}
+    return any("placeholder" in w for w in block.get("warnings") or [])
+
+
+def _validate_draft(
+    request: AnalysisRequest, raw_draft: dict[str, Any], findings: list[dict[str, Any]]
+) -> dict[str, Any]:
+    validated = validate_draft(
+        raw_draft,
+        phase_names=request.phase_names,
+        risky_patterns=request.risky_patterns,
+        known_finding_ids={f["id"] for f in findings},
+        require_commands=request.mode != "plan",
+    )
+    validated["name"] = raw_draft["name"]
+    validated["mode"] = request.mode
+    return validated
+
+
+async def _draft_chain(
+    request: AnalysisRequest, findings: list[dict[str, Any]], warnings: list[str]
+) -> dict[str, Any]:
+    payload_findings = _payload_findings(findings)
     rendered = json.dumps(payload_findings, indent=2, ensure_ascii=False)
     system_template = (
         prompt_text.PLAN_SYSTEM if request.mode == "plan" else prompt_text.DRAFT_SYSTEM
@@ -419,24 +445,35 @@ async def _draft_chain(
     ]
 
     raw_draft: dict[str, Any] = {"steps": []}
+    raw_text = ""
     try:
-        raw_draft = parse_json_object(
-            await request.provider.complete(messages, json_mode=True)
-        )
+        raw_text = await request.provider.complete(messages, json_mode=True)
+        raw_draft = parse_json_object(raw_text)
     except Exception as exc:
         warnings.append(f"draft generation failed: {exc}")
 
     raw_draft["name"] = request.draft_name or request.filename
     raw_draft["findings"] = payload_findings
-    validated = validate_draft(
-        raw_draft,
-        phase_names=request.phase_names,
-        risky_patterns=request.risky_patterns,
-        known_finding_ids={f["id"] for f in findings},
-        require_commands=request.mode != "plan",
-    )
-    validated["name"] = raw_draft["name"]
-    validated["mode"] = request.mode
+    validated = _validate_draft(request, raw_draft, findings)
+
+    if raw_text and request.brief and _has_placeholder(validated):
+        # one corrective pass: the operator already supplied the real values
+        try:
+            retry_text = await request.provider.complete(
+                [
+                    *messages,
+                    {"role": "assistant", "content": raw_text},
+                    {"role": "user", "content": prompt_text.DRAFT_PLACEHOLDER_RETRY},
+                ],
+                json_mode=True,
+            )
+            retry_draft = parse_json_object(retry_text)
+            retry_draft["name"] = raw_draft["name"]
+            retry_draft["findings"] = payload_findings
+            validated = _validate_draft(request, retry_draft, findings)
+        except Exception as exc:
+            warnings.append(f"draft placeholder retry failed: {exc}")
+
     if request.mode == "plan":
         validated["status"] = "plan"
 

@@ -14,6 +14,11 @@ from typing import Any
 ALLOWED_STEP_TYPES = ("local", "agent", "bash")
 MAX_COMMAND_CHARS = 4000
 MAX_STEPS = 40
+# unfilled values the model sometimes leaves behind; the pipeline may retry once
+PLACEHOLDER_RE = re.compile(
+    r"<[A-Za-z_][\w -]{0,24}>|\bTODO\b|\bTBD\b|\bCHANGEME\b|\bYOUR_[A-Z_]+\b",
+    re.IGNORECASE,
+)
 
 
 def _as_float(value: Any, fallback: float = 0.0) -> float:
@@ -140,6 +145,12 @@ def _parse_step(
     ]
     if not finding_ids:
         report.warnings.append(f"step {index}: no valid evidence reference")
+
+    placeholder = PLACEHOLDER_RE.search(command)
+    if placeholder is not None:
+        report.warnings.append(
+            f"step {index}: command uses placeholder {placeholder.group(0)}"
+        )
 
     is_dangerous = any(p.search(command) for p in rules.patterns)
     if is_dangerous:
