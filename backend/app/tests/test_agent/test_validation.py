@@ -139,6 +139,32 @@ def test_duplicate_commands_warned():
     assert any("duplicate command" in w for w in draft["validation"]["warnings"])
 
 
+def test_placeholder_in_command_warns_not_errors():
+    draft = validate_draft(
+        _payload(
+            steps=[
+                {
+                    "phase": "Execution",
+                    "step_type": "bash",
+                    "command": "nmap -sV <IP>",
+                    "finding_ids": [1],
+                },
+                {
+                    "phase": "Reconnaissance",
+                    "step_type": "bash",
+                    "command": "curl https://lab.example/TODO",
+                    "finding_ids": [1],
+                },
+            ]
+        ),
+        phase_names=PHASES,
+    )
+    warnings = draft["validation"]["warnings"]
+    assert draft["validation"]["errors"] == []
+    assert any("placeholder <IP>" in w for w in warnings)
+    assert any("placeholder TODO" in w for w in warnings)
+
+
 def test_findings_not_a_list():
     draft = validate_draft({"findings": "nope", "steps": []}, phase_names=PHASES)
     assert "findings must be a list" in draft["validation"]["errors"]

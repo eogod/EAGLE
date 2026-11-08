@@ -152,3 +152,33 @@ async def test_findings_per_segment_cap():
     provider = FakeProvider([json.dumps(many), json.dumps(DRAFT)])
     _, saved, _ = await _collect(provider, max_findings_per_segment=3)
     assert len(saved) == 3
+
+
+@pytest.mark.asyncio
+async def test_placeholder_retry_fires_once_when_brief_supplies_values():
+    sloppy = json.loads(json.dumps(DRAFT))
+    sloppy["steps"][0]["command"] = "nmap -sV <IP>"
+    fixed = json.loads(json.dumps(DRAFT))
+    provider = FakeProvider(
+        [json.dumps(FINDINGS), json.dumps(sloppy), json.dumps(fixed)]
+    )
+    _, _, result = await _collect(provider, brief="target is 10.0.0.5 on 445")
+
+    # extract + first draft + exactly one corrective retry
+    assert provider.call_count == 3
+    retry_user_message = provider.calls[2][0][-1]["content"]
+    assert retry_user_message.startswith("The operator already provided these values")
+    # the accepted draft is the corrected one
+    assert result.draft["steps"][0]["command"] == "echo beacon"
+    assert not any("placeholder" in w for w in result.draft["validation"]["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_placeholder_without_brief_does_not_retry():
+    sloppy = json.loads(json.dumps(DRAFT))
+    sloppy["steps"][0]["command"] = "nmap -sV TODO"
+    provider = FakeProvider([json.dumps(FINDINGS), json.dumps(sloppy)])
+    _, _, result = await _collect(provider)
+
+    assert provider.call_count == 2
+    assert any("placeholder" in w for w in result.draft["validation"]["warnings"])
