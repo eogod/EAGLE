@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING, Any
 import redis.asyncio as redis
 from sqlalchemy import func, select, update
 
-from app.cmd.llm_analysis import llm_service
 from app.core.config import get_settings
 from app.core.database_session import get_async_session
 from app.models import AttackStep, BashTask, MythicTask
+from app.services.llm_service import llm_service
 
 if TYPE_CHECKING:
     from app.cmd.c2_tool import MythicClient

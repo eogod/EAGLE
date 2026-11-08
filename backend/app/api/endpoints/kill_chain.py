@@ -14,9 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
-from app.cmd.llm_analysis import llm_service
 from app.core.llm_templ import LLMTemplates
 from app.models import AttackChain, AttackStep, User
+from app.services.llm_service import llm_service
 
 router = APIRouter()
 

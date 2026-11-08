@@ -11,6 +11,7 @@ from string import Template
 from typing import Any
 
 from app.agent import prompts as prompt_text
+from app.agent.errors import RunCancelled
 from app.agent.parsing import (
     Segment,
     parse_json_object,
@@ -18,15 +19,11 @@ from app.agent.parsing import (
     segment_pages,
 )
 from app.agent.validation import normalize_findings, validate_draft
-from app.cmd.llm_analysis import ChatStreamProvider
 from app.core.config import CHUNK_CHARS, MAX_CHUNKS
+from app.services.llm_service import ChatStreamProvider
 
 Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
 SaveFinding = Callable[[dict[str, Any]], Awaitable[int]]
-
-
-class RunCancelled(Exception):
-    """operator cancelled the run; partial results are not persisted as a draft"""
 
 
 @dataclass

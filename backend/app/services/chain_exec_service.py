@@ -15,6 +15,7 @@ from app.cmd.proc import (
 )
 from app.core import database_session
 from app.models import Agent, AttackStep
+from app.services.llm_service import analyze_command_output_with_llm
 from app.services.step_reuse import apply_execution, reusable
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,12 @@ class ChainExecutionService:
                             "command": row.command,
                         }
                     else:
-                        # custom step types return raw results without a row
+                        # custom steps have no AttackStep row, so there is no later
+                        # analyze endpoint to fill llm_analysis; do it before streaming
+                        strings_out = " ".join(i for i in result if isinstance(i, str))
+                        llm_a = await analyze_command_output_with_llm(
+                            strings_out, step.command
+                        )
                         resp_step = {
                             "step_id": None,
                             "chain_id": step.chain_id,
@@ -98,9 +104,7 @@ class ChainExecutionService:
                             "tool_name": step.tool_name,
                             "mythic_payload_uuid": None,
                             "status": "executed",
-                            "raw_log": " ".join(
-                                i for i in result if isinstance(i, str)
-                            ),
+                            "raw_log": strings_out,
                             "command": step.command,
                         }
                     out_d = {

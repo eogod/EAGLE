@@ -5,7 +5,8 @@ import json
 import httpx
 import pytest
 
-from app.cmd.llm_analysis import (
+from app.core.config import LLMservice
+from app.services.llm_service import (
     AgentLLMError,
     G4FProvider,
     OllamaProvider,
@@ -17,7 +18,6 @@ from app.cmd.llm_analysis import (
     _text_chat_models,
     build_provider,
 )
-from app.core.config import LLMservice
 
 MESSAGES = [{"role": "user", "content": "hello"}]
 
@@ -26,7 +26,7 @@ def _use_transport(monkeypatch, handler) -> None:
     transport = httpx.MockTransport(handler)
     original = httpx.AsyncClient
     monkeypatch.setattr(
-        "app.cmd.llm_analysis.httpx.AsyncClient",
+        "app.services.llm_service.httpx.AsyncClient",
         lambda **kw: original(**{**kw, "transport": transport}),
     )
 
@@ -159,7 +159,7 @@ async def test_ollama_streams_dict_and_object_chunks(monkeypatch):
             type("P", (), {"message": type("M", (), {"content": "b"})()})(),
         ]
     )
-    monkeypatch.setattr("app.cmd.llm_analysis.OllamaAsyncClient", lambda **kw: fake)
+    monkeypatch.setattr("app.services.llm_service.OllamaAsyncClient", lambda **kw: fake)
     provider = OllamaProvider(LLMservice(), model="m")
     assert await provider.complete(MESSAGES, json_mode=True) == "ab"
     assert fake.kwargs["format"] == "json"
@@ -169,14 +169,14 @@ async def test_ollama_streams_dict_and_object_chunks(monkeypatch):
 @pytest.mark.asyncio
 async def test_ollama_failure_maps_to_agent_error(monkeypatch):
     fake = _FakeOllama(error=RuntimeError("down"))
-    monkeypatch.setattr("app.cmd.llm_analysis.OllamaAsyncClient", lambda **kw: fake)
+    monkeypatch.setattr("app.services.llm_service.OllamaAsyncClient", lambda **kw: fake)
     provider = OllamaProvider(LLMservice())
     with pytest.raises(AgentLLMError, match="ollama request failed"):
         await provider.complete(MESSAGES)
 
 
 def test_base_provider_stream_is_abstract():
-    from app.cmd.llm_analysis import BaseProvider  # noqa: PLC0415
+    from app.services.llm_service import BaseProvider  # noqa: PLC0415
 
     with pytest.raises(NotImplementedError):
         BaseProvider().stream(MESSAGES)
@@ -187,7 +187,7 @@ def test_ollama_init_failure_is_a_config_error(monkeypatch):
     def boom(**kwargs):
         raise ValueError("bad host")
 
-    monkeypatch.setattr("app.cmd.llm_analysis.OllamaAsyncClient", boom)
+    monkeypatch.setattr("app.services.llm_service.OllamaAsyncClient", boom)
     with pytest.raises(ProviderNotConfigured, match="invalid ollama endpoint"):
         OllamaProvider(LLMservice())
 
@@ -195,7 +195,7 @@ def test_ollama_init_failure_is_a_config_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_ollama_passes_agent_error_through(monkeypatch):
     fake = _FakeOllama(error=AgentLLMError("already mapped"))
-    monkeypatch.setattr("app.cmd.llm_analysis.OllamaAsyncClient", lambda **kw: fake)
+    monkeypatch.setattr("app.services.llm_service.OllamaAsyncClient", lambda **kw: fake)
     provider = OllamaProvider(LLMservice())
     with pytest.raises(AgentLLMError, match="already mapped"):
         await provider.complete(MESSAGES)

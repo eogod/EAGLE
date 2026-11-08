@@ -4,36 +4,18 @@ based on doc https://www.unifiedkillchain.com/assets/The-Unified-Kill-Chain.pdf
 """
 
 import hashlib
-import json
 import logging
 import time
 import uuid
 from dataclasses import dataclass
 
 from fastapi import HTTPException, status
-from pydantic import BaseModel
 
 from app.cmd.c2_tool import MythicClient
-from app.cmd.llm_analysis import llm_service
-from app.core.config import PHASE_COMMANDS, UNSAFE_CMD, phase_prompts
-from app.core.llm_templ import LLMTemplates
+from app.core.config import PHASE_COMMANDS, UNSAFE_CMD
 from app.models import Agent, AttackStep, MythicTask
 
 logger = logging.getLogger(__name__)
-
-
-class ActionSuggestionsResponse(BaseModel):
-    """Pydantic model for LLM action suggestions response"""
-
-    phase: str
-    priorities: list[str] | None = []
-    tools: list[str] | None = []
-    attack_vectors: list[str] | None = []
-    what_to_look_for: list[str] | None = []
-    next_steps: list[str] | None = []
-    commands: list[str] | None = []
-    error: str | None = None
-    format: str | None = "json"
 
 
 @dataclass
@@ -136,10 +118,9 @@ async def process_approved_cmd(  # noqa: PLR0911  # one return per step_type bra
     def_func = getattr(mythic_client, cb.tool_name)
     args_e = cmd.split(":")  # enforce LLM to return params as b:c
     result = await def_func(cb.display_id, *args_e)
-    # check object from tuple for class, ret like 'status raw_log'
-    strings_out = " ".join(i for i in result if isinstance(i, str))
-    llm_analysis = await analyze_command_output_with_llm(strings_out, cmd)
-    return result, llm_analysis, "", None
+    # one return shape for every step type; callers unpack all four, and
+    # chain_exec fills llm_analysis from the raw custom output
+    return result, "", "", None
 
 
 async def process_new_callback(
@@ -375,26 +356,6 @@ async def check_and_process_bash_cmd(
     return step, ""
 
 
-async def analyze_command_output_with_llm(output: str, command: str) -> str:
-    """
-    sending command output to LLM for analysis
-    """
-    try:
-        prompt = f"""
-        command: {command}
-        output: {output}
-
-        analyze results and find most important things.
-        """
-
-        llm_response = await llm_service.query_llm(prompt)
-
-        return llm_response
-
-    except Exception as e:
-        return f"error while analysis LLM: {str(e)}"
-
-
 async def is_command_allowed_in_phase(
     cmd: str,
     phase_name: str,
@@ -454,49 +415,5 @@ async def is_command_allowed_in_phase(
 
 
 def get_commands_for_phase(phase_name: str):
-    """get specific commands for phase, format"""
+    """get specific commands for given phase, format"""
     return PHASE_COMMANDS.get(phase_name, [])
-
-
-async def suggest_actions_for_phase(
-    phase_name: str,
-    payload_type: str,
-    os_type: str,
-    mythic_client: MythicClient,
-) -> list[str]:
-    """Return list of suggested commands for given phase"""
-    by_agent = await mythic_client.get_commands_for_payload(payload_type, os_type)
-    return get_commands_for_phase(phase_name) + by_agent
-
-
-async def generate_action_suggestions_with_llm(
-    phase_name: str, context_summary: str = ""
-) -> dict:
-    """Use LLM to refine suggestions based on summary or logs"""
-    try:
-        base_prompt = phase_prompts.get(phase_name, phase_prompts["recon"])
-        prompt = base_prompt.format(
-            # cuz a = None or 1 will return 1
-            context=context_summary or "No context provided"
-        )
-
-        # Combine system prompt with user prompt
-        full_prompt = f"{LLMTemplates.SYSTEM_PROMT}\n\n{prompt}"
-        llm_response = await llm_service.query_llm(full_prompt)
-
-        try:
-            suggestions = json.loads(llm_response)
-            return suggestions
-        except json.JSONDecodeError:
-            response = ActionSuggestionsResponse(
-                phase=phase_name, suggestions=llm_response, format="text"
-            )
-            return response.dict()
-
-    except Exception as e:
-        response = ActionSuggestionsResponse(
-            phase=phase_name,
-            error=f"Error generating suggestions: {str(e)}",
-            suggestions=[],
-        )
-        return response.dict()

@@ -25,10 +25,6 @@ from app.agent.pipeline import (
 )
 from app.api import deps
 from app.api.deps import AgentRunController
-from app.cmd.llm_analysis import (  # types/errors only, AgentChatService calls
-    AgentLLMError,
-    ChatStreamProvider,
-)
 from app.core.config import (
     AGENT_DEFAULT_PROVIDER,
     CHUNK_CHARS,
@@ -43,6 +39,7 @@ from app.services.agent_document_service import AgentDocumentService
 from app.services.agent_draft_service import AgentDraftService, EditError
 from app.services.bash_service import BashCommandService
 from app.services.c2_service import CommandsC2ExecService
+from app.services.llm_service import AgentLLMError, ChatStreamProvider
 from app.services.ttp_info_service import UKC_PHASE_DESCRIPTIONS
 
 logger = logging.getLogger(__name__)

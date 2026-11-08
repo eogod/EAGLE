@@ -12,13 +12,13 @@ from app.cmd.proc import (
     CallbackInfo,
     ChainContext,
     PayloadParams,
-    analyze_command_output_with_llm,
     check_and_process_agent_cmd,
     check_and_process_local_cmd,
     get_agent_status,
     process_approved_cmd,
 )
 from app.models import AttackChain, AttackStep, BashTask, MythicTask, User
+from app.services.llm_service import analyze_command_output_with_llm
 from app.services.step_reuse import apply_execution, reusable
 
 

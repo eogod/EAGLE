@@ -1,4 +1,4 @@
-"""Module for unified interface to LLM services"""
+"""LLM access for the app: the chain-work pool plus the streaming agent providers"""
 
 import inspect
 import json
@@ -90,9 +90,10 @@ class LLMService:
             system=LLMTemplates.SYSTEM_PROMT,
         )
 
-        # remove think text for deepseek-r1, qwen, qwq models
         if res.response is None:
             raise HTTPException(500, "cannot get ollama response")
+
+        # remove think text for deepseek-r1, qwen, qwq models
         parts_th = res.response.rsplit("</think>", 1)
         return parts_th[-1] if len(parts_th) > 1 else res.response
 
@@ -111,7 +112,7 @@ class LLMService:
         return parts_th[-1] if len(parts_th) > 1 else text
 
     async def _g4f_llm(self, prompt: str, provider_name: str | None) -> str:
-        """Query g4f — auto-routes via AnyProvider if no provider specified."""
+        """Query g4f; auto-routes via AnyProvider if no provider specified."""
         if provider_name and provider_name in self.providers:
             provider = self.providers[provider_name]
             try:
@@ -180,6 +181,25 @@ class LLMService:
 
 
 llm_service = LLMService()
+
+
+async def analyze_command_output_with_llm(output: str, command: str) -> str:
+    """best-effort analysis of command output; failures come back as a string,
+    never raised"""
+    try:
+        prompt = f"""
+        command: {command}
+        output: {output}
+
+        analyze results and find most important things.
+        """
+
+        llm_response = await llm_service.query_llm(prompt)
+
+        return llm_response
+
+    except Exception as e:
+        return f"error while analysis LLM: {str(e)}"
 
 
 _HTTP_ERROR_MIN = 400

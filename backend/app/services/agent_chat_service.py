@@ -10,16 +10,16 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cmd.llm_analysis import (
+from app.core.config import get_settings
+from app.models import AgentFinding, AgentMessage, AgentRun, AgentSession, User
+from app.services.agent_scope import owned_chain, owned_run, owned_session
+from app.services.llm_service import (
     ChatStreamProvider,
     ProviderNotConfigured,
     build_provider,
     list_models,
     llm_service,
 )
-from app.core.config import get_settings
-from app.models import AgentFinding, AgentMessage, AgentRun, AgentSession, User
-from app.services.agent_scope import owned_chain, owned_run, owned_session
 
 
 class AgentChatService:
