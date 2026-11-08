@@ -1,6 +1,7 @@
 """Provider adapters: verify wire parsing, config errors and failure mapping."""
 
 import json
+from typing import Any
 
 import httpx
 import pytest
@@ -8,18 +9,23 @@ import pytest
 from app.core.config import LLMservice
 from app.services.llm_service import (
     AgentLLMError,
+    BaseProvider,
     G4FProvider,
     OllamaProvider,
     OpenRouterProvider,
     ProviderNotConfigured,
+    ToolCall,
+    ToolTurn,
     _ollama_content,
+    _ollama_tool_message,
     _openai_sse_delta,
+    _parse_emulated_tool_reply,
     _rank_openrouter_models,
     _text_chat_models,
     build_provider,
 )
 
-MESSAGES = [{"role": "user", "content": "hello"}]
+MESSAGES: list[dict[str, Any]] = [{"role": "user", "content": "hello"}]
 
 
 def _use_transport(monkeypatch, handler) -> None:
@@ -248,3 +254,297 @@ def test_openrouter_free_models_come_first_and_default_free():
     ]
     assert default == "alpha/model:free"
     assert _rank_openrouter_models([]) == ([], "")
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "websearch",
+            "description": "search the web",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+            },
+        },
+    }
+]
+
+ASSISTANT_CALL = {
+    "role": "assistant",
+    "content": None,
+    "tool_calls": [
+        {
+            "type": "function",
+            "id": "call_1",
+            "function": {
+                "name": "websearch",
+                "arguments": '{"query": "cats"}',
+            },
+        }
+    ],
+}
+
+TOOL_RESULT = {
+    "role": "tool",
+    "tool_call_id": "call_1",
+    "name": "websearch",
+    "content": "some web page",
+}
+
+TOOL_TRANSCRIPT: list[dict[str, Any]] = [
+    ASSISTANT_CALL,
+    TOOL_RESULT,
+    {"role": "user", "content": "then answer"},
+]
+
+
+def _sse(payload: str) -> bytes:
+    chunk = json.dumps({"choices": [{"delta": {"content": payload}}]})
+    return f"data: {chunk}\n\ndata: [DONE]\n\n".encode()
+
+
+@pytest.mark.asyncio
+async def test_openrouter_complete_tools_native_happy(monkeypatch):
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        seen["accept"] = request.headers.get("accept")
+        return httpx.Response(
+            200,
+            content=json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "websearch",
+                                            "arguments": '{"query": "cats"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ),
+        )
+
+    _use_transport(monkeypatch, handler)
+    provider = OpenRouterProvider(
+        LLMservice(openrouter_api_key="sk-or-v1-x"), model="m"
+    )
+    turn = await provider.complete_tools(TOOL_TRANSCRIPT, TOOLS)
+    assert turn == ToolTurn(
+        content="",
+        tool_calls=[
+            ToolCall(id="call_1", name="websearch", arguments={"query": "cats"})
+        ],
+    )
+    assert seen["body"]["tools"] == TOOLS
+    assert seen["body"]["tool_choice"] == "auto"
+    assert seen["body"]["stream"] is False
+    assert seen["body"]["messages"] == TOOL_TRANSCRIPT
+    assert seen["accept"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_complete_tools_400_falls_back_to_emulated(monkeypatch):
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "tools" in body:
+            return httpx.Response(400, content=b"tools unsupported")
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_sse('{"final": "the answer"}'),
+        )
+
+    _use_transport(monkeypatch, handler)
+    provider = OpenRouterProvider(
+        LLMservice(openrouter_api_key="sk-or-v1-x"), model="m"
+    )
+    turn = await provider.complete_tools(TOOL_TRANSCRIPT, TOOLS)
+    assert turn == ToolTurn(content="the answer", tool_calls=[])
+    assert provider.tools_fallback is True
+    assert len(bodies) == 2
+    assert "tools" not in bodies[1]
+    assert bodies[1]["response_format"] == {"type": "json_object"}
+
+    # the native path is skipped from now on
+    turn = await provider.complete_tools(MESSAGES, TOOLS)
+    assert turn.content == "the answer"
+    assert len(bodies) == 3
+    assert "tools" not in bodies[2]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_native_bad_json_args_kept_raw(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_9",
+                                        "function": {
+                                            "name": "websearch",
+                                            "arguments": "not json at all",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ),
+        )
+
+    _use_transport(monkeypatch, handler)
+    provider = OpenRouterProvider(
+        LLMservice(openrouter_api_key="sk-or-v1-x"), model="m"
+    )
+    turn = await provider.complete_tools(MESSAGES, TOOLS)
+    assert turn.tool_calls == [
+        ToolCall(id="call_9", name="websearch", arguments={"_raw": "not json at all"})
+    ]
+
+
+def test_ollama_tool_message_conversion():
+    assert _ollama_tool_message(ASSISTANT_CALL) == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"function": {"name": "websearch", "arguments": {"query": "cats"}}}
+        ],
+    }
+    assert _ollama_tool_message(TOOL_RESULT) == {
+        "role": "tool",
+        "content": "some web page",
+        "tool_name": "websearch",
+    }
+    assert _ollama_tool_message({"role": "user", "content": "hi"}) == {
+        "role": "user",
+        "content": "hi",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ollama_complete_tools_native_dict_response(monkeypatch):
+    reply = {
+        "message": {
+            "content": "thinking...",
+            "tool_calls": [
+                {"function": {"name": "websearch", "arguments": {"query": "cats"}}}
+            ],
+        }
+    }
+    fake = _FakeOllama(reply=[])
+
+    async def chat(**kwargs):
+        fake.kwargs = kwargs
+        return reply
+
+    fake.chat = chat
+    monkeypatch.setattr("app.services.llm_service.OllamaAsyncClient", lambda **kw: fake)
+    provider = OllamaProvider(LLMservice(), model="m")
+    turn = await provider.complete_tools(MESSAGES, TOOLS)
+    assert fake.kwargs["stream"] is False
+    assert fake.kwargs["tools"] == TOOLS
+    assert fake.kwargs["options"] == {"temperature": 0.1}
+    assert fake.kwargs["model"] == "m"
+    assert turn == ToolTurn(
+        content="thinking...",
+        tool_calls=[
+            ToolCall(id="call_0", name="websearch", arguments={"query": "cats"})
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_ollama_complete_tools_falls_back_when_native_rejected(monkeypatch):
+    fake = _FakeOllama(reply=[{"message": {"content": '{"final": "done here"}'}}])
+
+    async def chat(**kwargs):
+        fake.kwargs = kwargs
+        if "tools" in kwargs:
+            raise AgentLLMError("tool unsupported")
+
+        async def gen():
+            for item in fake.reply:
+                yield item
+
+        return gen()
+
+    monkeypatch.setattr("app.services.llm_service.OllamaAsyncClient", lambda **kw: fake)
+    provider = OllamaProvider(LLMservice(), model="m")
+    fake.chat = chat
+    turn = await provider.complete_tools(MESSAGES, TOOLS)
+    assert turn == ToolTurn(content="done here", tool_calls=[])
+    assert provider.tools_fallback is True
+    assert fake.kwargs.get("format") == "json"
+    assert fake.kwargs["messages"][-1]["role"] == "user"
+    assert "Choose tool calls" in fake.kwargs["messages"][-1]["content"]
+
+
+class _TranscriptStub(BaseProvider):
+    def __init__(self, text: str):
+        self.text = text
+        self.seen: list[list[dict[str, str]]] = []
+
+    async def stream(self, messages: list[dict[str, str]], *, json_mode: bool = False):
+        self.seen.append(messages)
+        yield self.text
+
+
+@pytest.mark.asyncio
+async def test_base_provider_emulated_builds_flat_prompt_and_parses_calls():
+    stub = _TranscriptStub(
+        '{"tool_calls": [{"name": "websearch", "arguments": {"query": "cats"}}]}'
+    )
+    turn = await stub.complete_tools(TOOL_TRANSCRIPT, TOOLS)
+    assert turn.tool_calls == [
+        ToolCall(id="call_0_websearch", name="websearch", arguments={"query": "cats"})
+    ]
+    assert turn.content == ""
+
+    flat = "\n".join(m["content"] for m in stub.seen[0])
+    assert 'TOOL websearch({"query": "cats"}): some web page' in flat
+    assert "ASSISTANT: tried tool calls (websearch)" in flat
+    assert "SYSTEM: then answer" not in flat
+    assert '"parameters"' in flat  # tool schemas included
+    assert "untrusted" in flat
+    assert stub.seen[0][0]["role"] == "system"
+    assert (
+        stub.seen[0][-1]["content"]
+        == "Choose tool calls or write the final answer as JSON."
+    )
+
+
+def test_parse_emulated_tool_reply_shapes():
+    turn = _parse_emulated_tool_reply('{"final": "all done"}')
+    assert turn == ToolTurn(content="all done", tool_calls=[])
+    turn = _parse_emulated_tool_reply("Hello, plain text answer")
+    assert turn == ToolTurn(content="Hello, plain text answer", tool_calls=[])
+    fenced = '```json\n{"tool_calls": [{"name": "websearch", "arguments": "{\\"q\\": 1}"}]}\n```'
+    turn = _parse_emulated_tool_reply(fenced)
+    assert turn == ToolTurn(
+        content="",
+        tool_calls=[
+            ToolCall(id="call_0_websearch", name="websearch", arguments={"q": 1})
+        ],
+    )
