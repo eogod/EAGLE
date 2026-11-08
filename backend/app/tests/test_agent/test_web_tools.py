@@ -4,7 +4,6 @@ DDG parsing and redirect unwrapping, block signals, the SSRF guard on every hop,
 the byte cap, caching and pagination; no real DNS or network.
 """
 
-import asyncio
 import socket
 
 import httpx
@@ -241,26 +240,12 @@ async def test_fetch_invalid_url_raises():
             await wts.fetch_url(bad)
 
 
-def test_normalize_url_drops_embedded_credentials():
+async def test_normalize_url_drops_embedded_credentials():
     """Userinfo must not reach the cache key or the text the model sees."""
     assert (
         wts._normalize_url("https://user:pass@example.com/a?b=1")
         == "https://example.com/a?b=1"
     )
-
-
-def test_gate_lock_follows_the_running_loop():
-    """A module-level gate outlives test loops, so each loop needs its own lock."""
-    gate = wts._Gate()
-
-    first = asyncio.run(_lock_for(gate))
-    second = asyncio.run(_lock_for(gate))
-
-    assert first is not second
-
-
-async def _lock_for(gate: wts._Gate) -> asyncio.Lock:
-    return gate._lock_for_running_loop()
 
 
 async def test_fetch_cache_hits_after_redirect(monkeypatch):

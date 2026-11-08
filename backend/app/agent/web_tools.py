@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from markdownify import markdownify
 
 from app.core.config import WebTools, get_settings
+from app.core.rate_gate import MinIntervalGate
 
 try:
     from readability import Document
@@ -88,37 +89,7 @@ class FetchResult:
     truncated: bool  # body byte cap, or offset + max_length < total_length
 
 
-class _Gate:
-    """Monotonic min-interval gate between matching requests (DDG and NVD keep
-    unauthenticated tiers polite); sleeps while holding the lock, so callers are
-    fully serialized."""
-
-    def __init__(self) -> None:
-        self.last = 0.0
-        self._lock: asyncio.Lock | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-
-    def _lock_for_running_loop(self) -> asyncio.Lock:
-        """A lock binds to the loop that first waits on it, and a module-level gate
-        outlives any single loop, so every loop gets its own lock."""
-        loop = asyncio.get_running_loop()
-        if self._lock is None or self._loop is not loop:
-            self._lock = asyncio.Lock()
-            self._loop = loop
-
-        return self._lock
-
-    async def wait(self, interval: float) -> None:
-        """Sleep until `interval` has passed since the previous call."""
-        async with self._lock_for_running_loop():
-            delay = interval - (time.monotonic() - self.last)
-            if delay > 0:
-                await asyncio.sleep(delay)
-
-            self.last = time.monotonic()
-
-
-_search_gate = _Gate()
+_search_gate = MinIntervalGate()
 # normalized url -> (expires, final url, full markdown, content type, byte-capped)
 _cache: dict[str, tuple[float, str, str, str, bool]] = {}
 
@@ -129,7 +100,7 @@ def clear_web_cache() -> None:
 
 
 def _retry_wait_seconds(headers: Any, default: float) -> float:
-    """Parse Retry-After seconds, falling back to `default` and capped at 30s so
+    """Parse Retry-After seconds, falling back to the default and capped at 30s so
     a retry never stalls the agent tool loop."""
     raw = headers.get("retry-after") if headers else None
     if raw is None:
@@ -273,7 +244,7 @@ def _normalize_url(raw: str) -> str:
 async def _guard_public_url(url: str) -> None:
     """Reject non-public fetch targets, both the initial url and every redirect hop.
 
-    Each resolved address (IPv4-mapped IPv6 unwrapped) must be global; `is_global`
+    Each resolved address (IPv4-mapped IPv6 unwrapped) must be global; is_global
     is the catch-all, and the explicit flags cover the few ranges it lets through.
     """
     cfg = get_settings().webtools
