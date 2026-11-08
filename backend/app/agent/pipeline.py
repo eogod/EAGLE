@@ -18,6 +18,8 @@ from app.agent.parsing import (
     quote_in_text,
     segment_pages,
 )
+from app.agent.research import run_research
+from app.agent.tools import ToolServices
 from app.agent.validation import normalize_findings, validate_draft
 from app.core.config import CHUNK_CHARS, MAX_CHUNKS
 from app.services.llm_service import ChatStreamProvider
@@ -44,6 +46,10 @@ class AnalysisRequest:
     brief: str = ""
     # compact snapshot of the chain being worked on, for ask mode
     chain_context: str = ""
+    # plan/build only: web research notes feed the draft prompt
+    research: bool = False
+    # test injection for the research tool services
+    research_tools: ToolServices | None = None
 
 
 @dataclass
@@ -53,6 +59,7 @@ class AnalysisResult:
     text: str
     warnings: list[str]
     mode: str = "build"
+    research: str = ""
 
 
 def _check(cancel_event: asyncio.Event | None) -> None:
@@ -134,6 +141,22 @@ async def analyze(
             },
         )
 
+    research_notes = ""
+    if request.research:
+        _check(cancel_event)
+        await emit("stage.started", {"stage": "research"})
+        research_notes, research_warnings = await _research(
+            request, findings, emit, cancel_event
+        )
+        warnings.extend(research_warnings)
+        await emit(
+            "stage.completed",
+            {
+                "stage": "research",
+                "summary": f"{len(research_notes)} chars of research notes",
+            },
+        )
+
     _check(cancel_event)
     await emit("stage.started", {"stage": "draft_chain"})
     draft_id = f"draft-{uuid.uuid4().hex[:12]}"
@@ -146,7 +169,7 @@ async def analyze(
         },
     )
 
-    draft = await _draft_chain(request, findings, warnings)
+    draft = await _draft_chain(request, findings, warnings, research_notes)
     await emit(
         "tool.completed",
         {
@@ -189,6 +212,7 @@ async def analyze(
         text=text,
         warnings=warnings,
         mode=request.mode,
+        research=research_notes,
     )
 
 
@@ -379,7 +403,7 @@ async def edit_chain(
 
 
 def _payload_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """compact finding shape fed to the draft prompt"""
+    """compact finding shape fed to both the research loop and the draft prompt"""
     return [
         {
             "id": f["id"],
@@ -391,6 +415,26 @@ def _payload_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for f in findings
     ]
+
+
+async def _research(
+    request: AnalysisRequest,
+    findings: list[dict[str, Any]],
+    emit: Emit,
+    cancel_event: asyncio.Event | None,
+) -> tuple[str, list[str]]:
+    """web tool loop over the findings; its notes feed the draft prompt."""
+    excerpt = "\n".join(text for _, text in request.pages)
+    return await run_research(
+        request.provider,
+        findings_text=json.dumps(_payload_findings(findings), ensure_ascii=False),
+        brief=request.brief,
+        excerpt=excerpt,
+        chain_context=request.chain_context,
+        tools=request.research_tools,
+        emit=emit,
+        cancel_event=cancel_event,
+    )
 
 
 def _has_placeholder(draft: dict[str, Any]) -> bool:
@@ -415,7 +459,10 @@ def _validate_draft(
 
 
 async def _draft_chain(
-    request: AnalysisRequest, findings: list[dict[str, Any]], warnings: list[str]
+    request: AnalysisRequest,
+    findings: list[dict[str, Any]],
+    warnings: list[str],
+    research_notes: str = "",
 ) -> dict[str, Any]:
     payload_findings = _payload_findings(findings)
     rendered = json.dumps(payload_findings, indent=2, ensure_ascii=False)
@@ -434,6 +481,7 @@ async def _draft_chain(
             "content": Template(prompt_text.DRAFT_USER).substitute(
                 findings=rendered,
                 brief=request.brief or "(none)",
+                research=research_notes or "(none)",
                 chain_block=(
                     f"Current chain (revise the unexecuted steps, keep executed ones):\n"
                     f"{request.chain_context}"

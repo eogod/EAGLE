@@ -13,6 +13,7 @@ from app.api.endpoints.agent_chat import get_agent_provider
 from app.core.config import get_settings
 from app.main import app
 from app.models import User
+from app.services.llm_service import ToolTurn
 from app.tests.test_agent.fixtures import FINDINGS, make_draft
 
 DOC_TEXT = (
@@ -32,10 +33,18 @@ class FakeProvider:
         self.replies = list(replies)
         self.streamed = list(streamed or [])
         self.calls = []
+        self.tool_calls = []
 
     async def complete(self, messages, *, json_mode=False):
         self.calls.append(messages)
         return self.replies.pop(0)
+
+    async def complete_tools(self, messages, tools):
+        # research stage: a canned no-tool turn, never touches the network
+        self.tool_calls.append(messages)
+        return ToolTurn(
+            content="beacon host uses smb signing [https://lab]", tool_calls=[]
+        )
 
     def stream(self, messages, *, json_mode=False):
         self.calls.append(messages)

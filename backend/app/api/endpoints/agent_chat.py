@@ -196,6 +196,7 @@ async def post_message(  # noqa: PLR0913, PLR0917 - FastAPI dependency signature
                 mode=payload.mode,
                 brief=payload.content,
                 chain_context=await drafts.chain_context(session_row, user),
+                research=get_settings().webtools.enabled,
             )
             if payload.mode == "ask":
                 await answer_question(
