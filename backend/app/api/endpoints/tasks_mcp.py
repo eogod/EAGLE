@@ -10,7 +10,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from fastapi import HTTPException
@@ -27,8 +27,12 @@ from app.services.bash_service import BashCommandService
 from app.services.c2_service import CommandsC2ExecService
 from app.services.chain_exec_service import ChainExecutionService
 from app.services.chain_service import ChainService
+from app.services.cve_service import cve_service
 from app.services.payload_service import AgentPayloadService
 from app.services.ttp_info_service import TTPInfoService
+
+# module alias so tests can swap the lookup behind the MCP tool
+lookup_cve = cve_service.get_cve_info
 
 # ref of this module, main lifespan attaches _events_service to it
 _this_mcp_module = sys.modules[__name__]
@@ -507,3 +511,10 @@ async def get_chain_phases() -> list[dict[str, str]]:
     async with database_session.get_async_session() as session:
         chain_svc = ChainService(session)
         return await chain_svc.get_possible_phases()
+
+
+@mcp.tool()
+async def get_cve_info(cve_id: str) -> dict[str, Any]:
+    """Get CVE details: description, CWE ids, CVSS, references and GitHub PoC repositories."""
+    info = await lookup_cve(cve_id)
+    return asdict(info)
