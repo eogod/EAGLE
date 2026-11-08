@@ -51,8 +51,10 @@ flowchart LR
     end
 
     subgraph SVC["app/services"]
+        llm_svc["llm_service.py<br/>LLMService, providers"]
         agent_svc["agent_chat/document/draft<br/>_service.py *"]
         ttp_svc["ttp_info_service.py"]
+        cve_svc["cve_service.py"]
         chain_svc["chain_service.py *"]
         c2_svc["c2_service.py *"]
         payload_svc["payload_service.py *"]
@@ -61,7 +63,6 @@ flowchart LR
     end
 
     subgraph CMD["app/cmd"]
-        llmcmd["llm_analysis.py<br/>LLMService, providers"]
         events["mythic_events.py * **"]
         proc["proc.py *"]
         c2tool["c2_tool.py"]
@@ -73,6 +74,11 @@ flowchart LR
         prompts["prompts.py"]
         parsing["parsing.py"]
         validation["validation.py"]
+        research["research.py"]
+        toolloop["tool_loop.py"]
+        tools["tools.py"]
+        web_tools["web_tools.py"]
+        errors["errors.py"]
     end
 
     subgraph STATE["state"]
@@ -97,7 +103,7 @@ flowchart LR
     fe_entities --> fe_shared
     fe_shared --> api_router
 
-    export_api --> llmcmd
+    export_api --> llm_svc
     llm_api --> agent_svc
     agent_api --> agent_svc
     agent_api --> pipeline
@@ -105,27 +111,38 @@ flowchart LR
     tasks_api & mcp_api --> chain_svc
     tasks_api --> events
     mcp_api -->|tools| ttp_svc
+    mcp_api -->|tools| cve_svc
 
     exec_svc --> proc
     c2_svc --> proc
     payload_svc --> proc
     bash_svc --> localbash
     bash_svc --> events
-    agent_svc --> llmcmd
+    events --> llm_svc
+    agent_svc --> llm_svc
     agent_svc --> pipeline
     agent_svc --> parsing
     agent_svc --> validation
     pipeline --> parsing
     pipeline --> validation
     pipeline --> prompts
+    pipeline --> research
+    pipeline --> tools
+    pipeline --> errors
+    research --> toolloop
+    research --> llm_svc
+    toolloop --> tools
+    toolloop --> errors
+    toolloop --> llm_svc
+    tools --> web_tools
+    tools --> cve_svc
 
     proc --> c2tool
     proc --> localbash
-    proc --> llmcmd
 
     ttp_svc --> mitre
     c2tool --> mythic
-    llmcmd --> llm
+    llm_svc --> llm
     mythic --> agents
 ```
 
@@ -138,15 +155,26 @@ finished `TTPInfoService` to `tasks_mcp`, and mounts `/api`, `/mcp`, and the bui
 frontend. `app/api/api_router.py` wires the endpoint files, which validate input and call
 a service or the database session directly (`auth.py`, `users.py`, `kill_chain.py`).
 Endpoints never import `app/cmd/*`; `app/services/*` owns chain, task, and agent
-persistence, and all LLM access goes through `AgentChatService`
-(`app/services/agent_chat_service.py`) on top of `app/cmd/llm_analysis.py`. That module
-holds both the chain-work pool (`LLMService`) and the streaming agent providers
-(`build_provider`, `list_models`).
+persistence. LLM access lives in `app/services/llm_service.py`: the chain-work pool
+(`LLMService`) and the streaming agent providers (`build_provider`, `list_models`).
+Agent chat goes through the `AgentChatService` facade. The pool is also consumed
+directly by `mythic_events` (task-output auto-analysis) and `kill_chain` (export
+summaries). `c2_service.analyze_step` and `chain_exec_service` call
+`analyze_command_output_with_llm`; chain_exec owns the decision to analyze
+custom-step output.
 
 Agent state is split across three services: `AgentChatService` (sessions, messages, runs,
 LLM facade), `AgentDocumentService` (untrusted uploads and parsing), and
 `AgentDraftService` (drafts, validation, chain import and edit operations). Shared
 ownership checks live in `app/services/agent_scope.py`.
+
+In plan/build the pipeline runs a bounded research stage between extraction and the
+draft (`app/agent/research.py` → `tool_loop.py` → `tools.py`): the model may call
+websearch/webfetch/get_cve_info (DuckDuckGo HTML search, SSRF-guarded page fetch,
+NVD + GitHub PoC lookup in `app/agent/web_tools.py` and `app/services/cve_service.py`)
+and its short operational notes reach the draft prompt as untrusted web content.
+Budgets live in the `WebTools` settings (default 4 steps / 5 calls); MCP exposes
+only `get_cve_info`.
 
 Chain execution goes through `app/cmd/proc.py`; Mythic tasking is in
 `app/cmd/c2_tool.py`; local commands run in `app/cmd/local_bash.py`.

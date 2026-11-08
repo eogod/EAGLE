@@ -154,6 +154,10 @@ To run chain, use **/cmd/run-chain/{chain_id}**, which streams each step’s out
 Emergency stop is available via WebSocket or HTTP cancel endpoints.
 The frontend at the root URL covers chain building and execution (agent / local),
 LLM-assisted output analysis, and the document-analysis agent panel.
+In plan/build the agent panel can research the web first: a bounded tool loop
+(websearch via DuckDuckGo, page fetch with an SSRF guard, CVE lookup via NVD/GitHub)
+feeds short operational notes into the chain draft. Budgets and the on/off switch live
+in `WebTools` config (`WEBTOOLS__ENABLED=0` disables it, default on); no API keys needed.
 
 Export a chain (with or without LLM analysis) via **/export-chain/json** or **/export-chain/yaml** to `JSON` or `YAML`.
 
