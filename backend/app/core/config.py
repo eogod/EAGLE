@@ -124,6 +124,33 @@ class MCP(BaseModel):
     api_key: str = ""
 
 
+class WebTools(BaseModel):
+    """research tool budgets: unauthenticated NVD/DDG/GitHub, no API keys;
+    caps stay small so 64-128k-context models survive the loop"""
+
+    enabled: bool = True
+    # tool loop caps: few turns and few calls keep a small context window alive
+    max_tool_steps: int = 4
+    max_tool_calls: int = 5
+    search_results: int = 5
+    # chars of one page handed to the model per webfetch call
+    fetch_max_chars: int = 8_000
+    fetch_timeout: float = 20.0
+    max_response_bytes: int = 2_000_000
+    cache_ttl: int = 900
+    cache_entries: int = 32
+    # document excerpt shown to the research agent inside <untrusted_document>
+    excerpt_chars: int = 6_000
+    # target length of the loop's final answer
+    notes_max_chars: int = 3_000
+    # unauthenticated NVD API rate tier: 6s between requests, no key
+    nvd_min_interval: float = 6.0
+    # search politeness, seconds between DuckDuckGo POSTs
+    search_min_interval: float = 2.0
+    # lab/dev only: lift the SSRF guard so the agent can fetch internal URLs
+    allow_private_urls: bool = False
+
+
 class LocalBash(BaseModel):
     """env format like LOCAL_BASH__ENABLED=1, direct bash on EAGLE host (Kali),
     no C2 in the loop, safety comes from the deny list below and the flag"""
@@ -165,6 +192,7 @@ class Settings(BaseSettings):
     mitre: Mitre = Field(default_factory=Mitre)
     mcp: MCP = Field(default_factory=MCP)
     local_bash: LocalBash = Field(default_factory=LocalBash)
+    webtools: WebTools = Field(default_factory=WebTools)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
