@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from app.agent import web_tools as wts
+from app.agent.tools import ToolLimits, default_services, execute_tool
 from app.core.config import get_settings
 
 # one loop per session: the fetch cache and the politeness gate are shared state
@@ -246,6 +247,25 @@ async def test_normalize_url_drops_embedded_credentials():
         wts._normalize_url("https://user:pass@example.com/a?b=1")
         == "https://example.com/a?b=1"
     )
+
+
+async def test_execute_tool_wires_default_services(monkeypatch):
+    """execute_tool calls the real services positionally; the wiring must accept it."""
+    _use_transport(
+        monkeypatch,
+        lambda _req: httpx.Response(
+            200, content=SEARCH_HTML, headers={"Content-Type": "text/html"}
+        ),
+    )
+    found = await execute_tool(
+        "websearch", {"query": "x"}, default_services(), ToolLimits()
+    )
+    page = await execute_tool(
+        "webfetch", {"url": "https://example.com/a"}, default_services(), ToolLimits()
+    )
+
+    assert found.startswith("Found ")
+    assert page.startswith("URL: https://example.com/a")
 
 
 async def test_fetch_cache_hits_after_redirect(monkeypatch):
