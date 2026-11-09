@@ -13,7 +13,7 @@ from app.agent.web_tools import (
     web_search,
 )
 from app.core.config import get_settings
-from app.services.cve_service import (
+from app.services.cve import (
     CveInfo,
     cve_service,
     format_cve_info,

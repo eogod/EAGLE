@@ -27,7 +27,7 @@ from app.services.bash_service import BashCommandService
 from app.services.c2_service import CommandsC2ExecService
 from app.services.chain_exec_service import ChainExecutionService
 from app.services.chain_service import ChainService
-from app.services.cve_service import cve_service
+from app.services.cve import cve_service
 from app.services.payload_service import AgentPayloadService
 from app.services.ttp_info_service import TTPInfoService
 
