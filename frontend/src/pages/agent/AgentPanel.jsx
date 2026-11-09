@@ -16,14 +16,15 @@ const TOOL_LABELS = {
   websearch: 'Searching the web',
   webfetch: 'Reading page',
   get_cve_info: 'Looking up CVE',
+  search_cves_by_cpe: 'Searching CVEs by CPE',
 }
 
-const RESEARCH_TOOLS = ['websearch', 'webfetch', 'get_cve_info']
+const RESEARCH_TOOLS = ['websearch', 'webfetch', 'get_cve_info', 'search_cves_by_cpe']
 
 // one muted line per research tool: the call's target plus what came back
 const researchDetail = (part) => {
   const args = part.args || {}
-  const target = args.query ?? args.url ?? args.cve_id ?? ''
+  const target = args.query ?? args.url ?? args.cve_id ?? args.cpe ?? ''
   const summary = String(part.result?.summary || '')
   if (part.toolName === 'websearch') {
     const count = summary.match(/Found (\d+)/)
@@ -32,6 +33,10 @@ const researchDetail = (part) => {
   if (part.toolName === 'webfetch') {
     const chars = summary.match(/Length: (\d+)/)
     return chars ? `${target} · ${chars[1]} chars` : target
+  }
+  if (part.toolName === 'search_cves_by_cpe') {
+    const count = summary.match(/CVEs: (\d+)/)
+    return count ? `${target} · ${count[1]} total` : target
   }
   return target
 }
