@@ -1,4 +1,4 @@
-"""Tool schemas and the executor behind the research agent's websearch/webfetch/get_cve_info."""
+"""Tool schemas and the executor behind the research agent's web/CVE tools."""
 
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ from app.agent.web_tools import (
 )
 from app.core.config import get_settings
 from app.services.cve import (
+    CpeSearchResult,
     CveInfo,
     cve_service,
+    format_cpe_search,
     format_cve_info,
     normalize_cve_id,
 )
@@ -25,6 +27,7 @@ _SEARCH_RESULTS_CAP = 20
 # per-tool result caps so one call can never flood a small context window
 _SEARCH_MAX_CHARS = 3_000
 _CVE_MAX_CHARS = 3_000
+_CPE_MAX_CHARS = 3_000
 
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -101,7 +104,46 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_cves_by_cpe",
+            "description": (
+                "Find CVEs for a CPE 2.3 string or a software name/version. "
+                "When the exact CPE is unknown, returns similar CPE names to retry"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cpe": {
+                        "type": "string",
+                        "description": (
+                            "CPE 2.3 like cpe:2.3:a:apache:http_server:2.4.49, "
+                            "or a software name like apache http server"
+                        ),
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": (
+                            "version when cpe is a software name, e.g. 2.4.49; "
+                            "omit for all versions"
+                        ),
+                    },
+                },
+                "required": ["cpe"],
+            },
+        },
+    },
 ]
+
+
+# one short key per tool keeps tool-loop event payloads small
+TOOL_ARG_KEY: dict[str, str] = {
+    "websearch": "query",
+    "webfetch": "url",
+    "get_cve_info": "cve_id",
+    "search_cves_by_cpe": "cpe",
+}
 
 
 @dataclass(frozen=True)
@@ -117,12 +159,16 @@ class ToolServices:
     search: Callable[[str, int], Awaitable[list[SearchHit]]]
     fetch: Callable[[str, int, int], Awaitable[FetchResult]]
     cve: Callable[[str], Awaitable[CveInfo]]
+    cpe: Callable[[str, str | None], Awaitable[CpeSearchResult]]
 
 
 def default_services() -> ToolServices:
     """wires the real service functions"""
     return ToolServices(
-        search=web_search, fetch=fetch_url, cve=cve_service.get_cve_info
+        search=web_search,
+        fetch=fetch_url,
+        cve=cve_service.get_cve_info,
+        cpe=cve_service.search_cves_by_cpe,
     )
 
 
@@ -148,13 +194,10 @@ async def execute_tool(
     limits: ToolLimits,
 ) -> str:
     """run one tool call; ALWAYS returns text (never raises): ERROR: <what> <hint> on failure"""
-    if name == "websearch":
-        return await _websearch(arguments, services, limits)
-    if name == "webfetch":
-        return await _webfetch(arguments, services, limits)
-    if name == "get_cve_info":
-        return await _cve_info(arguments, services)
-    return f"ERROR: unknown tool {name}."
+    handler = _HANDLERS.get(name)
+    if handler is None:
+        return f"ERROR: unknown tool {name}."
+    return await handler(arguments, services, limits)
 
 
 async def _websearch(
@@ -212,7 +255,9 @@ async def _webfetch(
     return "\n".join(lines)
 
 
-async def _cve_info(arguments: dict[str, Any], services: ToolServices) -> str:
+async def _cve_info(
+    arguments: dict[str, Any], services: ToolServices, limits: ToolLimits
+) -> str:
     cve_id = str(arguments.get("cve_id") or "").strip()
     try:
         cve_id = normalize_cve_id(cve_id)
@@ -226,3 +271,38 @@ async def _cve_info(arguments: dict[str, Any], services: ToolServices) -> str:
     if info.error:
         text = f"Note: {info.error}.\n{text}"
     return text[:_CVE_MAX_CHARS]
+
+
+async def _cpe_search(
+    arguments: dict[str, Any], services: ToolServices, limits: ToolLimits
+) -> str:
+    cpe = str(arguments.get("cpe") or "").strip()
+    version = str(arguments.get("version") or "").strip() or None
+    if not cpe:
+        return (
+            "ERROR: search_cves_by_cpe needs a CPE or software name, e.g. "
+            "cpe:2.3:a:apache:http_server:2.4.49 or 'apache http server 2.4.49'."
+        )
+    try:
+        result = await services.cpe(cpe, version)
+    except ValueError:
+        return (
+            "ERROR: search_cves_by_cpe could not parse that CPE/name; use a "
+            "CPE 2.3 string or 'vendor product version'."
+        )
+    except Exception as exc:
+        return f"ERROR: cpe search failed: {exc}. Continue without it."
+    text = format_cpe_search(result)
+    if result.error:
+        text = f"Note: {result.error}.\n{text}"
+    return text[:_CPE_MAX_CHARS]
+
+
+_HANDLERS: dict[
+    str, Callable[[dict[str, Any], ToolServices, ToolLimits], Awaitable[str]]
+] = {
+    "websearch": _websearch,
+    "webfetch": _webfetch,
+    "get_cve_info": _cve_info,
+    "search_cves_by_cpe": _cpe_search,
+}

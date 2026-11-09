@@ -61,7 +61,9 @@ def _execute(results: list[str]):
     return seen, execute
 
 
-_SERVICES = ToolServices(search=_not_called, fetch=_not_called, cve=_not_called)
+_SERVICES = ToolServices(
+    search=_not_called, fetch=_not_called, cve=_not_called, cpe=_not_called
+)
 
 
 async def test_no_tool_calls_returns_notes_without_events():
@@ -209,7 +211,12 @@ async def test_execute_tool_websearch_formats_hits():
             SearchHit(title="HackTricks SSH", url="https://x/ssh", snippet="s" * 400)
         ]
 
-    services = ToolServices(search=search, fetch=_SERVICES.fetch, cve=_SERVICES.cve)
+    services = ToolServices(
+        search=search,
+        fetch=_SERVICES.fetch,
+        cve=_SERVICES.cve,
+        cpe=_SERVICES.cpe,
+    )
     result = await execute_tool(
         "websearch",
         {"query": " ssh brute force ", "max_results": "7"},
@@ -249,7 +256,12 @@ async def test_execute_tool_webfetch_pages():
             truncated=truncated,
         )
 
-    services = ToolServices(search=_SERVICES.search, fetch=fetch, cve=_SERVICES.cve)
+    services = ToolServices(
+        search=_SERVICES.search,
+        fetch=fetch,
+        cve=_SERVICES.cve,
+        cpe=_SERVICES.cpe,
+    )
     limits = ToolLimits(fetch_max_chars=5)
     first = await execute_tool(
         "webfetch", {"url": "http://docs/x", "max_length": "junk"}, services, limits
@@ -271,7 +283,12 @@ async def test_execute_tool_service_exception_becomes_error_text():
     async def boom(url: str, offset: int, max_length: int) -> FetchResult:
         raise RuntimeError("connection refused")
 
-    services = ToolServices(search=_SERVICES.search, fetch=boom, cve=_SERVICES.cve)
+    services = ToolServices(
+        search=_SERVICES.search,
+        fetch=boom,
+        cve=_SERVICES.cve,
+        cpe=_SERVICES.cpe,
+    )
     result = await execute_tool("webfetch", {"url": "http://x"}, services, ToolLimits())
     assert result.startswith("ERROR: fetch failed: connection refused.")
     assert "Try a different URL or continue." in result
@@ -353,7 +370,12 @@ async def test_research_cve_error_note_is_surfaced_in_tool_result():
     async def cve(cve_id: str) -> CveInfo:
         return info
 
-    services = ToolServices(search=_SERVICES.search, fetch=_SERVICES.fetch, cve=cve)
+    services = ToolServices(
+        search=_SERVICES.search,
+        fetch=_SERVICES.fetch,
+        cve=cve,
+        cpe=_SERVICES.cpe,
+    )
     result = await execute_tool(
         "get_cve_info", {"cve_id": "CVE-2024-12345"}, services, ToolLimits()
     )

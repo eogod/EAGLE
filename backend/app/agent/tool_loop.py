@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agent.errors import RunCancelled
-from app.agent.tools import TOOL_SCHEMAS
+from app.agent.tools import TOOL_ARG_KEY, TOOL_SCHEMAS
 from app.services.llm_service import AgentLLMError, ToolCallingProvider, ToolTurn
 
 TOOL_RESULT_MAX = 12_000
@@ -40,12 +40,8 @@ class ToolLoopResult:
     warnings: list[str]
 
 
-# one short key per tool keeps the UI event payload small
-_ARG_KEY = {"websearch": "query", "webfetch": "url", "get_cve_info": "cve_id"}
-
-
 def _condensed_args(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    key = _ARG_KEY.get(tool)
+    key = TOOL_ARG_KEY.get(tool)
     if key and key in arguments:
         return {key: arguments[key]}
     return dict(arguments)

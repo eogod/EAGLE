@@ -1,5 +1,5 @@
-"""Research stage for plan/build: an LLM tool loop over websearch/webfetch/get_cve_info
-returning short operational notes for the chain planner."""
+"""Research stage for plan/build: an LLM tool loop over websearch/webfetch and the
+CVE tools returning short operational notes for the chain planner."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import Any
 
 from app.agent.tool_loop import run_tool_loop
 from app.agent.tools import (
+    TOOL_SCHEMAS,
     ToolServices,
     default_services,
     execute_tool,
@@ -22,7 +23,7 @@ Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 RESEARCH_SYSTEM = """You are a research agent supporting a red-team attack-chain planner.
-Tools: websearch, webfetch, get_cve_info.
+Tools: $tool_names.
 Collect only facts that change a command or a step: exploit prerequisites,
 exact commands, flags, paths, versions, default credentials, ports,
 service names, PoC repositories, ATT&CK technique details.
@@ -33,6 +34,8 @@ How to work:
 - webfetch the single most relevant search result, typically HackTricks or
   vendor docs, to pull exact commands and flags.
 - get_cve_info for every CVE-YYYY-NNN id seen in the findings (PoCs + CWEs).
+- search_cves_by_cpe when the findings name a product and version; if it returns
+  similar CPEs, retry once with the closest product-level CPE.
 - Do not call a tool with a query that is a raw person/company name or news topic.
 - Do not fetch private/internal addresses (10.x, 192.168.x, *.local, localhost).
 - Never repeat a lookup that already answered the question.
@@ -91,6 +94,9 @@ async def run_research(  # noqa: PLR0913  stage signature mirrors the pipeline's
             "content": Template(RESEARCH_SYSTEM).substitute(
                 max_calls=(max_calls if max_calls is not None else cfg.max_tool_calls),
                 notes_max_chars=cfg.notes_max_chars,
+                tool_names=", ".join(
+                    str(schema["function"]["name"]) for schema in TOOL_SCHEMAS
+                ),
             ),
         },
         {
