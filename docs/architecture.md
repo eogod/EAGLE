@@ -54,7 +54,7 @@ flowchart LR
         llm_svc["llm_service.py<br/>LLMService, providers"]
         agent_svc["agent_chat/document/draft<br/>_service.py *"]
         ttp_svc["ttp_info_service.py"]
-        cve_svc["cve_service.py"]
+        cve_svc["cve/<br/>service, nvd, cve, cpe<br/>cpe_rank, cpe_search, format"]
         chain_svc["chain_service.py *"]
         c2_svc["c2_service.py *"]
         payload_svc["payload_service.py *"]
@@ -170,11 +170,17 @@ ownership checks live in `app/services/agent_scope.py`.
 
 In plan/build the pipeline runs a bounded research stage between extraction and the
 draft (`app/agent/research.py` → `tool_loop.py` → `tools.py`): the model may call
-websearch/webfetch/get_cve_info (DuckDuckGo HTML search, SSRF-guarded page fetch,
-NVD + GitHub PoC lookup in `app/agent/web_tools.py` and `app/services/cve_service.py`)
-and its short operational notes reach the draft prompt as untrusted web content.
-Budgets live in the `WebTools` settings (default 4 steps / 5 calls); MCP exposes
-only `get_cve_info`.
+websearch/webfetch and the CVE tools (DuckDuckGo HTML search, SSRF-guarded page
+fetch, NVD + GitHub PoC lookup and CVE search by CPE or software version in
+`app/agent/web_tools.py` and `app/services/cve/`) and its short
+operational notes reach the draft prompt as untrusted web content. Budgets live in
+the `WebTools` settings (default 4 steps / 5 calls); MCP exposes `get_cve_info` and
+`search_cves_by_cpe`.
+
+The CVE/CPE intel package is split by responsibility: `service.py` owns caching and
+orchestration, `nvd.py` the NVD transport and rate gate, `cve.py` CVE parsing and
+GitHub PoCs, `cpe.py` and `cpe_rank.py` CPE parsing and similarity ranking,
+`cpe_search.py` the fallback lookup, and `format.py` the compact agent text.
 
 Chain execution goes through `app/cmd/proc.py`; Mythic tasking is in
 `app/cmd/c2_tool.py`; local commands run in `app/cmd/local_bash.py`.
