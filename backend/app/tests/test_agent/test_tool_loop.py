@@ -14,8 +14,9 @@ from app.agent.tool_loop import (
 )
 from app.agent.tools import ToolLimits, ToolServices, execute_tool
 from app.agent.web_tools import FetchResult, SearchHit
-from app.services.cve import CveInfo
+from app.services.cve import CpeSearchResult, CveInfo
 from app.services.llm_service import AgentLLMError, ToolCall, ToolTurn
+from app.tests.factories import make_cpe_result
 
 
 class FakeProvider:
@@ -239,6 +240,55 @@ async def test_execute_tool_cve_bad_id():
     )
     assert result.startswith("ERROR:")
     assert "CVE-2024-12345" in result
+
+
+async def test_execute_tool_cpe_rejects_empty_and_bad_input():
+    empty = await execute_tool(
+        "search_cves_by_cpe", {"cpe": " "}, _SERVICES, ToolLimits()
+    )
+    assert empty.startswith("ERROR:")
+
+    async def bad(cpe: str, version: str | None) -> CpeSearchResult:
+        raise ValueError("bad cpe")
+
+    services = ToolServices(
+        search=_SERVICES.search,
+        fetch=_SERVICES.fetch,
+        cve=_SERVICES.cve,
+        cpe=bad,
+    )
+    result = await execute_tool(
+        "search_cves_by_cpe", {"cpe": "nope"}, services, ToolLimits()
+    )
+    assert result.startswith("ERROR: search_cves_by_cpe could not parse")
+
+
+async def test_execute_tool_cpe_success_and_error_note():
+    result = make_cpe_result(
+        cpe="cpe:2.3:a:apache:http_server:*",
+        error="nvd cve search unavailable: boom",
+    )
+
+    async def cpe(value: str, version: str | None) -> CpeSearchResult:
+        assert value == "apache httpd"
+        assert version == "2.4.49"
+        return result
+
+    services = ToolServices(
+        search=_SERVICES.search,
+        fetch=_SERVICES.fetch,
+        cve=_SERVICES.cve,
+        cpe=cpe,
+    )
+    text = await execute_tool(
+        "search_cves_by_cpe",
+        {"cpe": "apache httpd", "version": "2.4.49"},
+        services,
+        ToolLimits(),
+    )
+
+    assert text.startswith("Note: nvd cve search unavailable: boom.\n")
+    assert "CVE-2021-41524" in text
 
 
 async def test_execute_tool_webfetch_pages():
