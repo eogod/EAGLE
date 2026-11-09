@@ -31,8 +31,9 @@ from app.services.cve import cve_service
 from app.services.payload_service import AgentPayloadService
 from app.services.ttp_info_service import TTPInfoService
 
-# module alias so tests can swap the lookup behind the MCP tool
+# module aliases so tests can swap the lookups behind the MCP tools
 lookup_cve = cve_service.get_cve_info
+lookup_cpe = cve_service.search_cves_by_cpe
 
 # ref of this module, main lifespan attaches _events_service to it
 _this_mcp_module = sys.modules[__name__]
@@ -518,3 +519,10 @@ async def get_cve_info(cve_id: str) -> dict[str, Any]:
     """Get CVE details: description, CWE ids, CVSS, references and GitHub PoC repositories."""
     info = await lookup_cve(cve_id)
     return asdict(info)
+
+
+@mcp.tool()
+async def search_cves_by_cpe(cpe: str, version: str | None = None) -> dict[str, Any]:
+    """Search CVEs by CPE 2.3 or software name/version; returns similar CPEs when the name is unknown."""
+    result = await lookup_cpe(cpe, version)
+    return asdict(result)
