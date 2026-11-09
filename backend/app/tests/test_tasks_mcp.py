@@ -1,10 +1,10 @@
-"""MCP get_cve_info shares app/services/cve_service.py; the module itself is
-tested in test_services/test_cve_service.py."""
+"""MCP get_cve_info shares app/services/cve/; the package itself is tested in
+test_services/test_cve_service.py."""
 
 import pytest
 
 from app.api.endpoints import tasks_mcp
-from app.services.cve_service import CveInfo
+from app.services.cve import CveInfo
 
 
 @pytest.mark.asyncio

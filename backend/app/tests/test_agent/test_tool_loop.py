@@ -14,7 +14,7 @@ from app.agent.tool_loop import (
 )
 from app.agent.tools import ToolLimits, ToolServices, execute_tool
 from app.agent.web_tools import FetchResult, SearchHit
-from app.services.cve_service import CveInfo
+from app.services.cve import CveInfo
 from app.services.llm_service import AgentLLMError, ToolCall, ToolTurn
 
 
