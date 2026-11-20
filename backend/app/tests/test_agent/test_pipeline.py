@@ -7,38 +7,13 @@ import pytest
 
 from app.agent.pipeline import AnalysisRequest, RunCancelled, analyze
 from app.services.llm_service import ToolTurn
-from app.tests.test_agent.fixtures import FINDINGS, make_draft
+from app.tests.test_agent.fixtures import FINDINGS, FakeProvider, make_draft
 
 PHASES = ("Command & Control", "Execution")
 DOC = [(1, "2026-01-01 C2 beacon to 26.26 observed in powershell logs.")]
 
 # save_finding assigns 7 to the first finding, so the draft must reference 7
 DRAFT = make_draft([7])
-
-
-class FakeProvider:
-    """complete()-only on purpose: the stream fake lives in test_agent_api."""
-
-    def __init__(self, replies, tool_replies=None):
-        self.replies = list(replies)
-        self.tool_replies = list(tool_replies or [])
-        self.calls = []
-        self.tool_calls = []
-
-    async def complete(self, messages, *, json_mode=False):
-        self.calls.append((messages, json_mode))
-        return self.replies.pop(0)
-
-    async def complete_tools(self, messages, tools):
-        self.tool_calls.append(messages)
-        return self.tool_replies.pop(0)
-
-    def stream(self, messages, *, json_mode=False):
-        raise AssertionError("pipeline uses complete()")
-
-    @property
-    def call_count(self):
-        return len(self.calls)
 
 
 def _request(provider, **overrides):

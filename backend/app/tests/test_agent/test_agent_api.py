@@ -14,7 +14,7 @@ from app.core.config import get_settings
 from app.main import app
 from app.models import User
 from app.services.llm_service import ToolTurn
-from app.tests.test_agent.fixtures import FINDINGS, make_draft
+from app.tests.test_agent.fixtures import FINDINGS, FakeProvider, make_draft
 
 DOC_TEXT = (
     "Incident report: 2026-01-01 C2 beacon to 26.26 observed in powershell logs.\n"
@@ -22,38 +22,12 @@ DOC_TEXT = (
 
 DRAFT = make_draft([1])
 
+RESEARCH = ToolTurn(content="beacon host uses smb signing [https://lab]", tool_calls=[])
 
-class FakeProvider:
-    """complete()-and-stream fake; the pipeline's fake omits stream on purpose."""
 
-    name = "fake"
-    model = "fake-model"
-
-    def __init__(self, replies, streamed=None):
-        self.replies = list(replies)
-        self.streamed = list(streamed or [])
-        self.calls = []
-        self.tool_calls = []
-
-    async def complete(self, messages, *, json_mode=False):
-        self.calls.append(messages)
-        return self.replies.pop(0)
-
-    async def complete_tools(self, messages, tools):
-        # research stage: a canned no-tool turn, never touches the network
-        self.tool_calls.append(messages)
-        return ToolTurn(
-            content="beacon host uses smb signing [https://lab]", tool_calls=[]
-        )
-
-    def stream(self, messages, *, json_mode=False):
-        self.calls.append(messages)
-
-        async def gen():
-            for chunk in self.streamed:
-                yield chunk
-
-        return gen()
+def _fake(replies=(), *, streamed=None) -> FakeProvider:
+    """each analysis run starts with the research stage: queue one canned turn"""
+    return FakeProvider(replies, tool_replies=[RESEARCH], streamed=streamed)
 
 
 def _sse_events(text: str) -> list[tuple[str, dict]]:
@@ -180,25 +154,14 @@ async def test_session_crud(client: AsyncClient, default_user_headers):
 async def test_session_requires_ownership(
     client: AsyncClient, session, default_user_headers
 ):
-    other = User(
-        user_id="00000000-0000-0000-0000-000000000001",
-        email="other@example.com",
-        hashed_password="x",
-    )
-    session.add(other)
-    await session.commit()
-
     created = await client.post(
         "/api/agent/sessions", json={"title": "theirs"}, headers=default_user_headers
     )
     assert created.status_code == 201
     # a different user id in the token cannot see it
     session_id = created.json()["id"]
-    from app.core.security.jwt import create_jwt_token  # noqa: PLC0415
+    other_headers = await _other_user_headers(session)
 
-    other_headers = {
-        "Authorization": f"Bearer {create_jwt_token(other.user_id).access_token}"
-    }
     assert (
         await client.get(f"/api/agent/sessions/{session_id}", headers=other_headers)
     ).status_code == 404
@@ -210,7 +173,7 @@ async def test_run_cancel_requires_ownership(
 ):
     session_id = await _new_session(client, default_user_headers)
     document_id = (await _upload(client, default_user_headers, session_id)).json()["id"]
-    app.dependency_overrides[get_agent_provider] = lambda: FakeProvider(
+    app.dependency_overrides[get_agent_provider] = lambda: _fake(
         [json.dumps(FINDINGS), json.dumps(DRAFT)]
     )
     response = await client.post(
@@ -233,7 +196,7 @@ async def test_draft_access_requires_ownership(
 ):
     session_id, chain_name = await _new_chained_session(client, default_user_headers)
     document_id = (await _upload(client, default_user_headers, session_id)).json()["id"]
-    app.dependency_overrides[get_agent_provider] = lambda: FakeProvider(
+    app.dependency_overrides[get_agent_provider] = lambda: _fake(
         [json.dumps(FINDINGS), json.dumps(DRAFT)]
     )
     await client.post(
@@ -298,7 +261,7 @@ async def test_analysis_stream_and_draft_import(
 ):
     session_id, chain_name = await _new_chained_session(client, default_user_headers)
     document_id = (await _upload(client, default_user_headers, session_id)).json()["id"]
-    app.dependency_overrides[get_agent_provider] = lambda: FakeProvider(
+    app.dependency_overrides[get_agent_provider] = lambda: _fake(
         [json.dumps(FINDINGS), json.dumps(DRAFT)]
     )
 
@@ -361,9 +324,7 @@ async def test_brief_mode_drafts_without_document(
     client: AsyncClient, default_user_headers
 ):
     session_id = await _new_session(client, default_user_headers)
-    app.dependency_overrides[get_agent_provider] = lambda: FakeProvider(
-        [json.dumps(DRAFT)]
-    )
+    app.dependency_overrides[get_agent_provider] = lambda: _fake([json.dumps(DRAFT)])
     response = await client.post(
         f"/api/agent/sessions/{session_id}/messages",
         json={"content": "phish a user then beacon out", "mode": "plan"},
@@ -384,7 +345,7 @@ async def test_ask_mode_streams_answer_without_draft(
     client: AsyncClient, default_user_headers
 ):
     session_id, _chain_name = await _new_chained_session(client, default_user_headers)
-    provider = FakeProvider([], streamed=["command and control ", "was observed."])
+    provider = _fake(streamed=["command and control ", "was observed."])
     app.dependency_overrides[get_agent_provider] = lambda: provider
     response = await client.post(
         f"/api/agent/sessions/{session_id}/messages",
@@ -410,7 +371,8 @@ async def test_ask_mode_streams_answer_without_draft(
     )
     assert "command and control" in text
     # ask mode sees the chain bound to the session
-    prompt = " ".join(message["content"] for message in provider.calls[0])
+    messages, _ = provider.calls[0]
+    prompt = " ".join(message["content"] for message in messages)
     assert "Current phase:" in prompt
 
 
@@ -421,7 +383,7 @@ async def test_plan_mode_imports_as_planned_and_is_replaced(
     session_id, chain_name = await _new_chained_session(client, default_user_headers)
     document_id = (await _upload(client, default_user_headers, session_id)).json()["id"]
     plan = {"steps": [dict(DRAFT["steps"][0], command="")]}
-    app.dependency_overrides[get_agent_provider] = lambda: FakeProvider(
+    app.dependency_overrides[get_agent_provider] = lambda: _fake(
         [json.dumps(FINDINGS), json.dumps(plan)]
     )
     response = await client.post(
@@ -455,7 +417,7 @@ async def test_plan_mode_imports_as_planned_and_is_replaced(
     assert again.status_code == 409
 
     # a build proposal replaces the unexecuted plan instead of stacking on it
-    app.dependency_overrides[get_agent_provider] = lambda: FakeProvider(
+    app.dependency_overrides[get_agent_provider] = lambda: _fake(
         [json.dumps(FINDINGS), json.dumps(DRAFT)]
     )
     build = await client.post(
@@ -497,9 +459,7 @@ async def test_edit_mode_adds_step_and_reports_blockers(
         ],
         "summary": "added one step",
     }
-    app.dependency_overrides[get_agent_provider] = lambda: FakeProvider(
-        [json.dumps(edits)]
-    )
+    app.dependency_overrides[get_agent_provider] = lambda: _fake([json.dumps(edits)])
     response = await client.post(
         f"/api/agent/sessions/{session_id}/messages",
         json={"content": "add a step and move to execution", "mode": "edit"},
@@ -524,9 +484,7 @@ async def test_edit_mode_adds_step_and_reports_blockers(
 
     # executing without a bash executor is reported per-op, not as a crash
     run_ops = {"operations": [{"op": "run_step", "step_id": rows[0]["id"]}]}
-    app.dependency_overrides[get_agent_provider] = lambda: FakeProvider(
-        [json.dumps(run_ops)]
-    )
+    app.dependency_overrides[get_agent_provider] = lambda: _fake([json.dumps(run_ops)])
     run = await client.post(
         f"/api/agent/sessions/{session_id}/messages",
         json={"content": "run it", "mode": "edit"},
@@ -624,7 +582,7 @@ async def test_cancel_completed_run_is_idempotent(
 ):
     session_id = await _new_session(client, default_user_headers)
     document_id = (await _upload(client, default_user_headers, session_id)).json()["id"]
-    app.dependency_overrides[get_agent_provider] = lambda: FakeProvider(
+    app.dependency_overrides[get_agent_provider] = lambda: _fake(
         [json.dumps(FINDINGS), json.dumps(DRAFT)]
     )
     response = await client.post(
