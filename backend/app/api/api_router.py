@@ -90,6 +90,10 @@ async def serve_frontend(full_path: str):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
 
     if full_path:
+        # reject traversal before joining: resolve() + is_relative_to below is
+        # what really contains the path, this makes the intent literal
+        if ".." in Path(full_path).parts:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
         candidate = (_frontend_dist / full_path).resolve()
         dist_root = _frontend_dist.resolve()
         if candidate.is_file() and candidate.is_relative_to(dist_root):
