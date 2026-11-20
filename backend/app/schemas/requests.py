@@ -39,6 +39,19 @@ class LocalCommandRequest(BaseRequest):
     chain_name: str
     callback_display_id: int
     command: str
+    is_analyze_llm: bool = False
+    # execute this existing (unexecuted) row instead of inserting a new one
+    step_id: int | None = None
+
+
+class BashCommandRequest(BaseRequest):
+    """direct bash on EAGLE host, no C2, ticket + redis events"""
+
+    # TODO: add env, cwd, shell and run_as fields so each step carries its own environment.
+    chain_name: str
+    command: str
+    timeout: int = 300
+    step_id: int | None = None
 
 
 class AgentCommandRequest(BaseRequest):
@@ -46,6 +59,8 @@ class AgentCommandRequest(BaseRequest):
     callback_display_id: int
     command_params: str | None = "uname -a;lscpu;free;df;id;pwd;lsblk"
     tool: str | None = "shell"
+    is_analyze_llm: bool = False
+    step_id: int | None = None
 
 
 class ActionApprovalRequest(BaseModel):

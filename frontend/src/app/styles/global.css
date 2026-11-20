@@ -1,0 +1,79 @@
+@import 'tailwindcss';
+
+/* native controls (scrollbars, selects) follow the dark theme */
+:root {
+  color-scheme: dark;
+
+  /* react-toastify inherits the console palette instead of shipping its own */
+  --toastify-color-dark: #171c21;
+  --toastify-color-light: #171c21;
+  --toastify-color-info: #7aa2c9;
+  --toastify-color-success: #6f9e77;
+  --toastify-color-warning: #c9a45c;
+  --toastify-color-error: #c96f66;
+  --toastify-color-progress-dark: #7aa2c9;
+  --toastify-color-progress-success: #6f9e77;
+  --toastify-color-progress-warning: #c9a45c;
+  --toastify-color-progress-error: #c96f66;
+  --toastify-text-color-dark: #d7dee5;
+  --toastify-text-color-light: #d7dee5;
+  --toastify-font-family: inherit;
+  --toastify-toast-bd-radius: 8px;
+}
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-default) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-default);
+    border: 2px solid var(--color-app);
+    border-radius: 6px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--color-strong);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in oklab, #7aa2c9 28%, transparent);
+  }
+  .Toastify__toast {
+    border: 1px solid var(--color-default);
+  }
+  .Toastify__toast-body {
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}
+
+/* one cool graphite ramp, ice accent, green/red for state */
+@theme {
+  --color-app: #0e1114;
+  --color-nav: #12161a;
+  --color-card: #171c21;
+  --color-card-hover: #1d2329;
+  --color-input: #0c1013;
+  --color-dropdown: #171c21;
+  --color-subtle: #232a31;
+  --color-default: #2f3841;
+  --color-strong: #47535e;
+  --color-primary: #d7dee5;
+  --color-secondary: #9aa6b2;
+  --color-muted: #6b7884;
+  --color-accent: #7aa2c9;
+  --color-danger: #c96f66;
+  --color-success: #6f9e77;
+  --color-warning: #c9a45c;
+}

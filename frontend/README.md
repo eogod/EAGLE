@@ -1,19 +1,16 @@
-# EAGLE Project Frontend Documentation
+# React + Vite
 
-The EAGLE project frontend is a minimalist solution crafted to address specific operational requirements with strategic technological simplicity. Leveraging `JavaScript`, `jQuery`, and `Tailwind CSS`, our implementation focuses on core functionality beyond traditional interface development.
+This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
-## Functional Scope
+Currently, two official plugins are available:
 
-Our frontend enables critical operations:
-- Command execution on agents and locally
-- Launching execution chains
-- Emergency chain interruption via `WebSocket`
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
-> interrupting the chain does not work for the current step due to the specifics of its execution on the backend, cancels only the next one or after next step
+## React Compiler
 
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-## Technological Strategy
+## Expanding the Oxlint configuration
 
-The current implementation serves as an experimental platform, bridging immediate project needs with future architectural aspirations. It represents a deliberate choice to maintain flexibility and prepare for eventual migration to `React` + integrated `Tailwind CSS` .
-
-By prioritizing operational efficiency over comprehensive UI, we've created a lightweight interface that supports essential project interactions while providing a testing ground for innovative development approaches.
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.

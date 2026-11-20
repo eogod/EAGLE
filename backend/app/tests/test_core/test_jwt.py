@@ -13,14 +13,6 @@ from app.core.config import get_settings
 from app.core.security import jwt
 
 
-def test_jwt_access_token_can_be_decoded_back_into_user_id() -> None:
-    user_id = "test_user_id"
-    token = jwt.create_jwt_token(user_id)
-
-    payload = jwt.verify_jwt_token(token=token.access_token)
-    assert payload.sub == user_id
-
-
 @freeze_time("2024-01-01")
 def test_jwt_payload_is_correct() -> None:
     user_id = "test_user_id"
@@ -28,6 +20,7 @@ def test_jwt_payload_is_correct() -> None:
 
     assert token.payload.iat == int(time.time())
     assert token.payload.sub == user_id
+    assert jwt.verify_jwt_token(token=token.access_token).sub == user_id
     assert token.payload.iss == get_settings().security.jwt_issuer
     assert (
         token.payload.exp
@@ -54,8 +47,7 @@ def test_jwt_error_before_iat_time() -> None:
         with pytest.raises(HTTPException) as e:
             jwt.verify_jwt_token(token=token.access_token)
 
-        assert e.value.detail == "Token invalid: "
-        "The token is not yet valid (iat)"
+        assert e.value.detail == "Token invalid: The token is not yet valid (iat)"
 
 
 def test_jwt_error_with_invalid_token() -> None:

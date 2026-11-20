@@ -252,9 +252,8 @@ class TTPInfoService:
                 continue
 
             # reject if no overlap with current phases
-            if same_phase_only:
-                if not set(s.ukc_phases).intersection(current_phases):
-                    continue
+            if same_phase_only and not set(s.ukc_phases).intersection(current_phases):
+                continue
             if target_phase and target_phase not in s.ukc_phases:
                 continue
 

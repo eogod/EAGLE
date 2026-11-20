@@ -4,13 +4,13 @@ to simplify the creation of a chain relative to the user
 """
 
 import json
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
-from app.cmd.llm_analysis import llm_service
 from app.core.llm_templ import LLMTemplates
 from app.models import (
     AttackChain,
@@ -26,24 +26,27 @@ from app.schemas.requests import (
     SuggestActionRequest,
 )
 from app.schemas.responses import SuggestActionResponse
+from app.services.agent_chat_service import AgentChatService
 
 router = APIRouter()
 
+AgentServiceDep = Annotated[AgentChatService, Depends(deps.get_agent_chat_service)]
+
 
 @router.post("/query", description="General questions to LLM")
-async def llm_query(request: QueryRequest):
+async def llm_query(request: QueryRequest, service: AgentServiceDep):
     """
     Основной эндпоинт для запросов к LLM
     """
     try:
-        result = await llm_service.query_llm(request.prompt, request.provider)
+        result = await service.query_llm(request.prompt, request.provider)
         return {"success": True, "response": result, "prompt": request.prompt}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/generate/payload")
-async def generate_payload(request: PayloadRequest):
+async def generate_payload(request: PayloadRequest, service: AgentServiceDep):
     """
     Генерирует пейлоады для penetration testing
     """
@@ -52,14 +55,14 @@ async def generate_payload(request: PayloadRequest):
         prompt = LLMTemplates.PAYLOAD_GENERATION.format(
             language=request.language, description=request.description
         )
-        result = await llm_service.query_llm(prompt)
+        result = await service.query_llm(prompt)
 
         # Используем шаблон для генерации команд
         commands_prompt = LLMTemplates.COMMANDS_GENERATION.format(
             language=request.language, script=result
         )
 
-        commands_result = await llm_service.query_llm(commands_prompt)
+        commands_result = await service.query_llm(commands_prompt)
 
         # Пытаемся распарсить команды
         try:
@@ -88,6 +91,7 @@ async def generate_payload(request: PayloadRequest):
 @router.post("/suggest-action", response_model=SuggestActionResponse)
 async def suggest_action_from_llm(
     req: SuggestActionRequest,
+    service: AgentServiceDep,
     session: AsyncSession = Depends(deps.get_session),
     current_user: User = Depends(deps.get_current_user),
 ):
@@ -133,7 +137,7 @@ async def suggest_action_from_llm(
     }
     st: str = json.dumps(pre_dict, indent=2)
     prompt = LLMTemplates.SUGGEST_ACTION_CMD.format(p_command=req.p_command, step=st)
-    llm_raw: str = await llm_service.query_llm(prompt)
+    llm_raw: str = await service.query_llm(prompt)
 
     try:
         llm_json = json.loads(llm_raw)
@@ -155,13 +159,13 @@ async def suggest_action_from_llm(
 
 
 @router.post("/analyze/code", description="Analyze and explain code via LLM")
-async def analyze_code(request: CodeAnalysisRequest):
+async def analyze_code(request: CodeAnalysisRequest, service: AgentServiceDep):
     """
     Анализирует код с помощью LLM
     """
     try:
         prompt = f"analyze this code and explain it to me\n\n{request.code}"
-        result = await llm_service.query_llm(prompt)
+        result = await service.query_llm(prompt)
         return {"success": True, "analysis": result, "code": request.code}
     except Exception as e:
         raise HTTPException(
@@ -170,15 +174,19 @@ async def analyze_code(request: CodeAnalysisRequest):
 
 
 @router.get("/providers", description="Return list of LLM providers")
-async def get_providers():
+async def get_providers(service: AgentServiceDep):
     """
     Возвращает список доступных провайдеров
     """
     try:
-        providers_list = []
-        for name, provider in llm_service.providers.items():
-            providers_list.append({"name": name, "class": provider.__name__})
-        return {"success": True, "providers": providers_list}
+        providers_list = service.llm_providers()
+        return {
+            "success": True,
+            "providers": [
+                {"name": name, "class": class_name}
+                for name, class_name in providers_list.items()
+            ],
+        }
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"error retrieving provider: {str(e)}"
@@ -186,14 +194,14 @@ async def get_providers():
 
 
 @router.post("/chat", description="Chat with llm in context of chain")
-async def chat_conversation(req: ChatRequest):
+async def chat_conversation(req: ChatRequest, service: AgentServiceDep):
     """
     Эндпоинт для ведения диалога
     """
     if not req.messages:
         raise HTTPException(status_code=400, detail="messages list is required")
 
-    result = await llm_service.query_llm_chat(req.messages, req.provider)
+    result = await service.query_llm_chat(req.messages, req.provider)
     return {
         "success": True,
         "response": result,

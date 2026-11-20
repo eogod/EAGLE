@@ -4,15 +4,36 @@ to working with Mythic C2
 """
 
 import json
+import logging
 import os
 import socket
 import uuid
 
 from dotenv import load_dotenv
 from mythic import mythic
+from mythic.mythic_classes import Mythic
 from pydantic import UUID4, BaseModel
 
+from app.cmd.mythic_events import MythicEventsService
+
 load_dotenv()
+logger = logging.getLogger(__name__)
+
+
+class TaskTicket(BaseModel):
+    """fire-and-forget ticket from mythic, live status by mythic_task_id"""
+
+    mythic_task_id: int
+    callback_display_id: int
+    status: str = "submitted"
+
+
+class NewPayloadTicket(BaseModel):
+    """result of create payload, build is async and watched by events service"""
+
+    payload_uuid: UUID4
+    payload_id: int
+    status: str = "building"
 
 
 class AgentCommandOutput(BaseModel):
@@ -38,10 +59,21 @@ class MythicClient:
 
     def __init__(self) -> None:
         self._instance = None
+        # optional, set by main lifespan from events service
+        self._events: MythicEventsService | None = None
+
+    def bind_events(self, events: MythicEventsService) -> None:
+        """same websocket instance reused by events service"""
+        self._events = events
 
     @property
     def connected(self) -> bool:
         return self._instance is not None
+
+    @property
+    def instance(self) -> Mythic | None:
+        """connected mythic websocket instance, None until login"""
+        return self._instance
 
     async def connect(self) -> None:
         self._instance = await mythic.login(
@@ -55,6 +87,22 @@ class MythicClient:
     async def disconnect(self) -> None:
         self._instance = None
 
+    async def issue_task_async(
+        self, command_name: str, parameters: str, callback_display_id: int
+    ) -> TaskTicket:
+        """fire-and-forget tasking, ticket tracks status via events service"""
+        res = await mythic.issue_task(
+            mythic=self._instance,
+            command_name=command_name,
+            parameters=parameters,
+            callback_display_id=callback_display_id,
+        )
+        return TaskTicket(
+            mythic_task_id=res["display_id"],
+            callback_display_id=callback_display_id,
+            status=str(res.get("status", "submitted")),
+        )
+
     async def create_payload(
         self,
         file_name: str = "nt-merlin",
@@ -62,8 +110,9 @@ class MythicClient:
         lport: int = 4329,
         os_type: str = "Windows",
         payload_type: str = "None",
-    ) -> NewPayloadOutput:
-        """create payload and save, nt-merlin-http by default"""
+    ) -> NewPayloadTicket:
+        """create payload and save, nt-merlin-http by default,
+        build is async, watcher in events service tracks build phase"""
         if lhost == "local":
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 s.connect(("1.1", 80))
@@ -96,15 +145,20 @@ class MythicClient:
                 {"name": "mode", "value": "default"},
                 {"name": "garble", "value": False},
             ],
-            return_on_complete=True,
+            return_on_complete=False,
         )
         p_uuid = payload_response["uuid"]
-        p_id = payload_response["id"]
-        status = payload_response["build_phase"]
-        raw_log = payload_response["build_message"]
-        return NewPayloadOutput(
-            payload_uuid=p_uuid, payload_id=p_id, status=status, raw_log=raw_log
+        if p_uuid is None:
+            raise RuntimeError(payload_response.get("error", "payload build refused"))
+        p_payload = await mythic.get_payload_by_uuid(
+            mythic=self._instance,
+            uuid=p_uuid,
+            custom_return_attributes="id uuid",
         )
+        p_id = int(p_payload.get("id", 0) or 0)
+        if self._events is not None and self._events.available:
+            await self._events.watch_payload(p_uuid)
+        return NewPayloadTicket(payload_uuid=p_uuid, payload_id=p_id, status="building")
 
     async def get_commands_for_payload(
         self, p_type: str = "merlin", os_type: str = "Windows"
@@ -120,6 +174,7 @@ class MythicClient:
                 cmd_list.append(cmd["cmd"])
         return cmd_list
 
+    # TODO: add a console driver (send line, wait for prompt) for interactive tools.
     async def pivoting_agent(self, display_id, lport, agent_type) -> str:
         """forward agent via itself, return status"""
         command_name, parameters = "", ""
@@ -238,20 +293,84 @@ class MythicClient:
             return payload.get("id"), payload.get("uuid")
         return 1, uuid.uuid4()
 
+    async def _wait_mythic_output(self, task_display_id: int, timeout: int) -> str:
+        """blocking wait for final task output straight from mythic"""
+        return str(
+            await mythic.waitfor_for_task_output(
+                mythic=self._instance,
+                task_display_id=task_display_id,
+                timeout=timeout,
+            )
+        )
+
+    async def _submit_and_wait(
+        self,
+        command_name: str,
+        parameters: str,
+        callback_display_id: int,
+        timeout: int = 3000,
+    ) -> tuple[str, int]:
+        """blocking compat path for wrappers: events hot path when alive,
+        else direct mythic issue + wait, ticket id is always the real one"""
+        if self._events is not None and self._events.available and self._instance:
+            return await self._submit_via_events(
+                command_name, parameters, callback_display_id, timeout
+            )
+        return await self._submit_via_mythic(
+            command_name, parameters, callback_display_id, timeout
+        )
+
+    async def _submit_via_events(
+        self,
+        command_name: str,
+        parameters: str,
+        callback_display_id: int,
+        timeout: int,
+    ) -> tuple[str, int]:
+        """issue async, wait on the redis stream, replay from mythic on lag"""
+        ticket = await self.issue_task_async(
+            command_name, parameters, callback_display_id
+        )
+        output, status_out = await self._events.wait_for_task_output(
+            ticket.mythic_task_id, timeout=max(timeout // 1000, 10)
+        )
+        logger.info(
+            "command output for callback %s: %s", callback_display_id, status_out
+        )
+        if not output:
+            # collector may lag, replay straight from mythic
+            output = await self._wait_mythic_output(ticket.mythic_task_id, timeout)
+        return output, ticket.mythic_task_id
+
+    async def _submit_via_mythic(
+        self,
+        command_name: str,
+        parameters: str,
+        callback_display_id: int,
+        timeout: int,
+    ) -> tuple[str, int]:
+        """direct mythic issue + blocking wait, when events are not alive"""
+        res = await mythic.issue_task(
+            mythic=self._instance,
+            command_name=command_name,
+            parameters=parameters,
+            callback_display_id=callback_display_id,
+        )
+        mythic_t_id = res["display_id"]
+        output = await self._wait_mythic_output(mythic_t_id, timeout)
+        return output, mythic_t_id
+
     async def execute_local_command(
         self, cmd: str, callback_display_id: int, timeout: int = 5000
     ) -> AgentCommandOutput:
         """async function to execute command on zero agent via shell agent
         and timeout, inside, there is a subscription to graphql event
         at the end of the task"""
-        output = await mythic.issue_task_and_waitfor_task_output(
-            mythic=self._instance,
-            command_name="shell",
-            parameters=cmd,
-            callback_display_id=callback_display_id,
-            timeout=timeout,
+        logger.info("local command: %s on callback %s", cmd, callback_display_id)
+        output, mythic_t_id = await self._submit_and_wait(
+            "shell", cmd, callback_display_id, timeout
         )
-        mythic_t_id = callback_display_id
+        logger.info("local command output for callback %s", callback_display_id)
         mythic_p_id, mythic_p_uuid = await self.get_payload_ids(callback_display_id)
 
         return AgentCommandOutput(
@@ -265,17 +384,13 @@ class MythicClient:
         self, cmd: str, params: str, callback_display_id: int, timeout=3000
     ) -> AgentCommandOutput:
         """execute cmd with params on remote agent"""
-        output = await mythic.issue_task_and_waitfor_task_output(
-            mythic=self._instance,
-            command_name=cmd,
-            parameters=params,
-            callback_display_id=callback_display_id,
-            timeout=timeout,
+        output, mythic_t_id = await self._submit_and_wait(
+            cmd, params, callback_display_id, timeout
         )
         mythic_p_id, mythic_p_uuid = await self.get_payload_ids(callback_display_id)
         return AgentCommandOutput(
             output=str(output),
-            mythic_task_id=1,
+            mythic_task_id=mythic_t_id,
             mythic_payload_id=mythic_p_id,
             mythic_payload_uuid=mythic_p_uuid,
         )

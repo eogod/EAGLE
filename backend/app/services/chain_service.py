@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.agent.timing import runtime_delay
 from app.core.config import phases
 from app.models import AttackChain, AttackStep, CurrentAttackPhase, User
 from app.services.ttp_info_service import UKC_PHASE_DESCRIPTIONS
@@ -78,6 +80,7 @@ class ChainService:
         chain_c_phase = chain_c_phase_list.scalars().first()
         if chain_c_phase is None:
             raise HTTPException(status_code=404, detail="Phase not found")
+
         current_phase_n = chain_c_phase.phase or "Reconnaissance"
         res_l_step = await self.session.execute(
             select(AttackStep)
@@ -128,6 +131,7 @@ class ChainService:
             select(CurrentAttackPhase).where(CurrentAttackPhase.chain_id == chain_id)
         )
         c_phase = res_phase.scalars().first()
+
         if not c_phase:
             c_phase = CurrentAttackPhase(chain_id=chain_id, phase=phase_name)
             self.session.add(c_phase)
@@ -147,6 +151,7 @@ class ChainService:
         last_attack_step_obj = res_l_step.scalars().first()
         if last_attack_step_obj is None:
             raise HTTPException(status_code=404, detail="No step to reject")
+
         await self.session.delete(last_attack_step_obj)
         await self.session.commit()
         return last_attack_step_obj
@@ -162,9 +167,53 @@ class ChainService:
 
     async def get_chain_steps(self, chain_id: int) -> list[AttackStep]:
         chain_steps_list = await self.session.execute(
-            select(AttackStep).where(AttackStep.chain_id == chain_id)
+            select(AttackStep)
+            .where(AttackStep.chain_id == chain_id)
+            .order_by(AttackStep.id)
         )
         return list(chain_steps_list.scalars().all())
+
+    async def get_chain_with_steps(
+        self, chain_id: int, current_user: User
+    ) -> dict[str, Any]:
+        chain_ca_list = await self.session.execute(
+            select(AttackChain).where(AttackChain.id == chain_id)
+        )
+        chain_ca = chain_ca_list.scalars().first()
+        if chain_ca is None:
+            raise HTTPException(status_code=404, detail="Chain not found")
+        chain_username = current_user.username or current_user.email.split("@", 1)[0]
+        chain_c_phase_list = await self.session.execute(
+            select(CurrentAttackPhase).where(CurrentAttackPhase.chain_id == chain_ca.id)
+        )
+
+        chain_c_phase = chain_c_phase_list.scalars().first()
+        if chain_c_phase is None:
+            raise HTTPException(status_code=404, detail="Phase not found")
+
+        current_phase_n = chain_c_phase.phase or "Reconnaissance"
+        steps = await self.session.execute(
+            select(AttackStep)
+            .where(AttackStep.chain_id == chain_id)
+            .order_by(AttackStep.id)
+            .options(selectinload(AttackStep.agent))
+        )
+        steps = list(steps.scalars().all())
+        for step in steps:
+            # replaying an agent step appends a new Agent row; the last one is current
+            agent = step.agent[-1] if step.agent else None
+            step.callback_display_id = agent.callback_display_id if agent else 0
+
+        return {
+            "chain_id": chain_ca.id,
+            "user_id": chain_ca.user_id,
+            "chain_name": chain_ca.chain_name,
+            "username": chain_username,
+            "user_email": current_user.email,
+            "final_status": chain_ca.final_status,
+            "current_phase_name": current_phase_n,
+            "steps": steps,
+        }
 
     async def get_last_step(self, chain_id: int) -> AttackStep | None:
         res_l_step = await self.session.execute(
@@ -174,6 +223,72 @@ class ChainService:
             .limit(1)
         )
         return res_l_step.scalars().first()
+
+    async def delete_step(self, step_id: int, current_user: User) -> None:
+        step = await self.session.get(AttackStep, step_id)
+        if step is None:
+            raise HTTPException(status_code=404, detail="Step not found")
+        chain = await self.session.get(AttackChain, step.chain_id)
+
+        if chain is None or chain.user_id != current_user.user_id:
+            raise HTTPException(status_code=404, detail="Chain not found")
+
+        await self.session.delete(step)
+        await self.session.commit()
+
+    async def edit_step(
+        self, step_id: int, current_user: User, patch: dict[str, Any]
+    ) -> AttackStep:
+        step = await self.session.get(AttackStep, step_id)
+        if step is None:
+            raise HTTPException(status_code=404, detail="Step not found")
+
+        chain = await self.session.get(AttackChain, step.chain_id)
+        if chain is None or chain.user_id != current_user.user_id:
+            raise HTTPException(status_code=404, detail="Chain not found")
+
+        allowed_fields = {
+            "tool_name",
+            "step_type",
+            "command",
+            "raw_log",
+            "status",
+            "delay_before_secs",
+            "delay_reason",
+            "delay_enabled",
+        }
+        for field, value in patch.items():
+            if field not in allowed_fields:
+                continue
+            if field == "delay_before_secs":
+                try:
+                    seconds = int(value or 0)
+                except (TypeError, ValueError):
+                    continue
+                setattr(step, field, runtime_delay(seconds))
+                continue
+            setattr(step, field, value)
+
+        await self.session.commit()
+        await self.session.refresh(step)
+        return step
+
+    async def set_phase_timing(
+        self, chain_id: int, phase: str, enabled: bool, current_user: User
+    ) -> int:
+        """the phase checkbox flips every step in that column at once."""
+        chain = await self.session.get(AttackChain, chain_id)
+        if chain is None or chain.user_id != current_user.user_id:
+            raise HTTPException(status_code=404, detail="Chain not found")
+
+        result = await self.session.execute(
+            update(AttackStep)
+            .where(AttackStep.chain_id == chain_id, AttackStep.phase == phase)
+            .values(delay_enabled=enabled)
+        )
+        await self.session.commit()
+
+        return int(getattr(result, "rowcount", 0) or 0)
 
     @staticmethod
     async def get_possible_phases() -> list[dict[str, str]]:
@@ -189,3 +304,36 @@ class ChainService:
                 status_code=400, detail="Unknown phase, check UCKC phases"
             )
         return UKC_PHASE_DESCRIPTIONS.get(phase_name, "")
+
+    async def list_chains(self, current_user: User) -> list[dict[str, Any]]:
+        result = await self.session.execute(
+            select(AttackChain)
+            .where(AttackChain.user_id == current_user.user_id)
+            .order_by(desc(AttackChain.create_time))
+        )
+        chains = result.scalars().all()
+        chain_list = []
+
+        for c in chains:
+            phase_row = await self.session.execute(
+                select(CurrentAttackPhase).where(CurrentAttackPhase.chain_id == c.id)
+            )
+            phase_obj = phase_row.scalars().first()
+            chain_list.append(
+                {
+                    "chain_id": c.id,
+                    "chain_name": c.chain_name,
+                    "current_phase_name": phase_obj.phase
+                    if phase_obj
+                    else "Reconnaissance",
+                }
+            )
+        return chain_list
+
+    async def delete_chain(self, chain_id: int, current_user: User) -> None:
+        chain = await self.session.get(AttackChain, chain_id)
+        if chain is None or chain.user_id != current_user.user_id:
+            raise HTTPException(status_code=404, detail="Chain not found")
+
+        await self.session.delete(chain)
+        await self.session.commit()

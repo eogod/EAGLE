@@ -7,9 +7,11 @@
 services:
   postgres_db:
     restart: unless-stopped
-    image: postgres:17
+    image: postgres:18
     volumes:
-      - postgres_db:/var/lib/postgresql/data
+      # 18+ wants a single mount here; data lands in 18/docker
+      # pg17 data stays in the old backend_postgres_db volume as a fallback
+      - postgres_db_v18:/var/lib/postgresql
     environment:
       - POSTGRES_DB=${DATABASE__DB}
       - POSTGRES_USER=${DATABASE__USERNAME}
@@ -19,5 +21,15 @@ services:
     ports:
       - "${DATABASE__PORT}:5432"
 
+  redis_db:
+    restart: unless-stopped
+    image: ghcr.io/valkey-io/valkey:8.1.3-alpine
+    # hot state only: task statuses & events, db keeps the record
+    command: ["redis-server", "--requirepass", "${REDIS__PASSWORD}"]
+    env_file:
+      - .env
+    ports:
+      - "${REDIS__PORT}:6379"
+
 volumes:
-  postgres_db:
+  postgres_db_v18:

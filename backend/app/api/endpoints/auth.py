@@ -3,13 +3,14 @@ Module that handles all responsibilities and endpoints
 that related to authentication, access tokens, registration
 """
 
+import logging
 import secrets
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +26,47 @@ from app.models import RefreshToken, User
 from app.schemas.requests import RefreshTokenRequest, UserCreateRequest
 from app.schemas.responses import AccessTokenResponse, UserResponse
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# refresh cookie stays scoped to the refresh endpoint only
+COOKIE_SECURE = bool(get_settings().security.cookie_secure)
+
+
+def _set_session_cookies(
+    response: Response, access_token: str, refresh_token: str
+) -> None:
+    """HttpOnly, keep the tokens out of the frontend storage"""
+    cfg = get_settings().security
+    response.set_cookie(
+        deps.ACCESS_COOKIE,
+        access_token,
+        max_age=cfg.jwt_access_token_expire_secs,
+        httponly=True,
+        secure=cfg.cookie_secure,
+        samesite="strict",
+    )
+    response.set_cookie(
+        deps.REFRESH_COOKIE,
+        refresh_token,
+        max_age=cfg.refresh_token_expire_secs,
+        httponly=True,
+        secure=cfg.cookie_secure,
+        samesite="strict",
+        path=deps.REFRESH_COOKIE_PATH,
+    )
+
+
+def _clear_session_cookies(response: Response) -> None:
+    response.delete_cookie(deps.ACCESS_COOKIE, secure=COOKIE_SECURE, samesite="strict")
+    response.delete_cookie(
+        deps.REFRESH_COOKIE,
+        path=deps.REFRESH_COOKIE_PATH,
+        secure=COOKIE_SECURE,
+        samesite="strict",
+    )
+
 
 ACCESS_TOKEN_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {
@@ -54,6 +95,16 @@ REFRESH_TOKEN_RESPONSES: dict[int | str, dict[str, Any]] = {
             }
         },
     },
+    401: {
+        "description": "Replayed rotated refresh token, all user sessions revoked",
+        "content": {
+            "application/json": {
+                "example": {
+                    "detail": api_messages.REFRESH_TOKEN_ALREADY_USED,
+                }
+            }
+        },
+    },
     404: {
         "description": "Refresh token does not exist",
         "content": {
@@ -73,11 +124,12 @@ REFRESH_TOKEN_RESPONSES: dict[int | str, dict[str, Any]] = {
     "for future requests using username and password",
 )
 async def login_access_token(
+    response: Response,
     session: AsyncSession = Depends(deps.get_session),
     form_data: OAuth2PasswordRequestForm = Depends(),
 ) -> AccessTokenResponse:
     """get user by email -> compare hashed password
-    return jwt token"""
+    return jwt token, cookies are set alongside the body for the browser"""
     query = select(User).where(User.email == form_data.username)
     user = await session.scalar(query)
 
@@ -106,6 +158,10 @@ async def login_access_token(
     session.add(refresh_token_new)
     await session.commit()
 
+    _set_session_cookies(
+        response, jwt_token.access_token, refresh_token_new.refresh_token
+    )
+
     return AccessTokenResponse(
         access_token=jwt_token.access_token,
         expires_at=jwt_token.payload.exp,
@@ -122,10 +178,21 @@ async def login_access_token(
     "for future requests using refresh token",
 )
 async def refresh_token(
-    data: RefreshTokenRequest,
+    response: Response,
+    request: Request,
+    data: RefreshTokenRequest | None = None,
     session: AsyncSession = Depends(deps.get_session),
 ) -> AccessTokenResponse:
-    """if user authenticated, check and return refresh jwt token"""
+    """cookie first, json body second;
+    replay of a rotated token wipes the whole family of that user"""
+    if not data or not data.refresh_token:
+        cookie_token = request.cookies.get(deps.REFRESH_COOKIE)
+        if not cookie_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=api_messages.REFRESH_TOKEN_NOT_FOUND,
+            )
+        data = RefreshTokenRequest(refresh_token=cookie_token)
     token = await session.scalar(
         select(RefreshToken)
         .where(RefreshToken.refresh_token == data.refresh_token)
@@ -144,8 +211,19 @@ async def refresh_token(
             detail=api_messages.REFRESH_TOKEN_EXPIRED,
         )
     if token.used:
+        # replay means theft -> wipe all sessions of the user
+        # (SKIP LOCKED keeps parallel replays serialized, no double delete)
+        victim_user_id = token.user_id
+        await session.execute(
+            delete(RefreshToken).where(RefreshToken.user_id == victim_user_id)
+        )
+        await session.commit()
+        logger.warning(
+            "refresh token reuse for user %s, revoked all three sessions",
+            victim_user_id,
+        )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail=api_messages.REFRESH_TOKEN_ALREADY_USED,
         )
 
@@ -162,12 +240,34 @@ async def refresh_token(
     session.add(refresh_token_new)
     await session.commit()
 
+    _set_session_cookies(
+        response, jwt_token.access_token, refresh_token_new.refresh_token
+    )
+
     return AccessTokenResponse(
         access_token=jwt_token.access_token,
         expires_at=jwt_token.payload.exp,
         refresh_token=refresh_token_new.refresh_token,
         refresh_token_expires_at=refresh_token_new.exp,
     )
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    description="Revoke all refresh tokens of the user and clear session cookies",
+)
+async def logout(
+    response: Response,
+    current_user: User = Depends(deps.get_current_user),
+    session: AsyncSession = Depends(deps.get_session),
+) -> None:
+    """all refresh tokens die, no forgotten laptop stays logged in"""
+    await session.execute(
+        delete(RefreshToken).where(RefreshToken.user_id == current_user.user_id)
+    )
+    await session.commit()
+    _clear_session_cookies(response)
 
 
 @router.post(
@@ -179,8 +279,16 @@ async def refresh_token(
 async def register_new_user(
     new_user: UserCreateRequest,
     session: AsyncSession = Depends(deps.get_session),
+    current_user: User = Depends(deps.get_current_user),
 ) -> User:
-    """register new user by just unique email and password"""
+    """open registration + bash tool on same box = anyone owns the machine"""
+    # TODO: role system (admin/operator/auditor) + admin UI, for now only
+    # the bootstrap admin from .env exists and registration stays closed
+    if not get_settings().security.registration_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is disabled, ask admin to create the account",
+        )
     query = select(User).where(User.email == new_user.email)
     user = await session.scalar(query)
     if user is not None:

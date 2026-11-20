@@ -12,20 +12,9 @@ from app.tests.conftest import (
     default_user_id,
 )
 
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_read_current_user_status_code(
-    client: AsyncClient, default_user_headers: dict[str, str]
-) -> None:
-    response = await client.get(
-        app.url_path_for("read_current_user"),
-        headers=default_user_headers,
-    )
-
-    assert response.status_code == status.HTTP_200_OK
+pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
-@pytest.mark.asyncio(loop_scope="session")
 async def test_read_current_user_response(
     client: AsyncClient, default_user_headers: dict[str, str]
 ) -> None:
@@ -34,7 +23,10 @@ async def test_read_current_user_response(
         headers=default_user_headers,
     )
 
+    assert response.status_code == status.HTTP_200_OK
     assert response.json() == {
         "user_id": default_user_id,
         "email": default_user_email,
+        "role": None,
+        "username": None,
     }

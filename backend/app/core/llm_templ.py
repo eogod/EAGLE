@@ -70,8 +70,9 @@ Each field should be an array of command strings.
     Return JSON with the following fields:
     - command (str) — main command text (optional in the schema response,
     but LLM must generate it for subsequent processing) based on last,
-    - type_cmd (str|null) only in [local, agent, custom, payload, getcallback]
-    but any CLI or console or shell command is local or agent shell,
+    - type_cmd (str|null) only in [local, bash, agent, custom, payload, getcallback]
+    but any CLI or console or shell command is local or bash (direct on host)
+    or agent shell,
     - type_tool (str|null) like ls, id, impacket, nmap,
     - phase (str|null) in kill chain (extended virsion UKC),
     - target_os_type (str|null).

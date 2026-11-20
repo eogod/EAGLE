@@ -1,0 +1,33 @@
+name: semgrep_backend
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+
+  pull_request:
+    paths:
+      - "backend/**"
+
+permissions:
+  # informational
+  contents: read
+
+jobs:
+  semgrep_fastapi:
+    runs-on: ubuntu-latest
+    # cuz many fp
+    continue-on-error: true
+
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      # https://semgrep.dev/p/python
+      - name: Run Semgrep Analysis
+        run: semgrep scan --config p/python --metrics=off backend/

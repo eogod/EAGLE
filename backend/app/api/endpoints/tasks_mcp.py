@@ -8,23 +8,35 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from fastapi import HTTPException
 from mcp.server.mcpserver import MCPServer
 from sqlalchemy import select
 
 from app.cmd.c2_tool import MythicClient
+from app.cmd.mythic_events import MythicEventsService
 from app.core import database_session
 from app.core.security.jwt import create_jwt_token, verify_jwt_token
 from app.core.security.password import verify_password
 from app.models import User
+from app.services.bash_service import BashCommandService
 from app.services.c2_service import CommandsC2ExecService
 from app.services.chain_exec_service import ChainExecutionService
 from app.services.chain_service import ChainService
+from app.services.cve import cve_service
 from app.services.payload_service import AgentPayloadService
 from app.services.ttp_info_service import TTPInfoService
+
+# module aliases so tests can swap the lookups behind the MCP tools
+lookup_cve = cve_service.get_cve_info
+lookup_cpe = cve_service.search_cves_by_cpe
+
+# ref of this module, main lifespan attaches _events_service to it
+_this_mcp_module = sys.modules[__name__]
 
 mcp = MCPServer(
     "EAGLE MCP",
@@ -54,9 +66,8 @@ class ToolContext:
 _auth = AuthState()
 _ctx: ToolContext | None = None
 _ctx_lock = asyncio.Lock()
-# loaded startup from main.py
-_attack_graph = None
-_apt_chain_index = None
+# finished service from main lifespan
+_ttp_service: TTPInfoService | None = None
 
 
 def _env(name: str) -> str:
@@ -107,8 +118,9 @@ async def _get_ctx() -> ToolContext:
 
 
 def _get_ttp_service() -> TTPInfoService:
-    assert _attack_graph is not None, "MITRE ATT&CK data not loaded at startup"
-    return TTPInfoService(_attack_graph, _apt_chain_index)
+    if _ttp_service is None:
+        raise ValueError("MITRE ATT&CK service not loaded at startup")
+    return _ttp_service
 
 
 @mcp.tool()
@@ -119,6 +131,33 @@ async def create_attack_chain(chain_name: str) -> dict[str, Any]:
         svc = ChainService(session)
         chain_id, name, phase = await svc.create_chain(chain_name, ctx.user)
     return {"chain_id": chain_id, "chain_name": name, "current_phase_name": phase}
+
+
+@mcp.tool()
+async def run_bash_command(
+    chain_name: str,
+    command: str,
+    timeout: int = 300,
+) -> dict[str, Any]:
+    """Execute a bash command directly on the Kali host where EAGLE runs, no C2 in the
+    loop (fast, unlike zero agent). Denied only by reject patterns (kill-the-box and
+    stdin hangers), cannot replace commands on remote Mythic agents (use
+    run_agent_command for those). Waits and returns output, exit_code, status,
+    full_log_path — one-shot like a local bash tool."""
+    events = _events_service()
+    if events is None or not events.available:
+        return {"error": "events service not available, cannot run bash safely"}
+    ctx = await _get_ctx()
+    try:
+        async with database_session.get_async_session() as session:
+            bash_svc = BashCommandService(session, events)
+            result = await bash_svc.start(command, chain_name, ctx.user, timeout)
+        bash_task_id = result["bash_task_id"]
+        async with database_session.get_async_session() as session:
+            bash_svc = BashCommandService(session, events)
+            return await bash_svc.wait_result(bash_task_id, max(1, int(timeout)))
+    except HTTPException as e:
+        return {"error": str(e.detail)}
 
 
 @mcp.tool()
@@ -141,7 +180,7 @@ async def run_local_command(
             chain_id,
             phase_name,
             ctx.user,
-            no_llm_analysis=True,
+            is_analyze_llm=False,
         )
     return {"chain_name": chain_name_r, **result}
 
@@ -168,7 +207,7 @@ async def run_agent_command(
             chain_id,
             phase_name,
             ctx.user,
-            no_llm_analysis=True,
+            is_analyze_llm=False,
         )
     return {"chain_name": chain_name_r, **result}
 
@@ -214,6 +253,34 @@ async def get_agent_status(display_id: int) -> str:
     async with database_session.get_async_session() as session:
         cmd_svc = CommandsC2ExecService(session, ctx.mythic)
         return await cmd_svc.get_agent_status(display_id)
+
+
+def _events_service() -> MythicEventsService | None:
+    """events service shared from main lifespan for task status tools"""
+    return getattr(_this_mcp_module, "_events_service", None)
+
+
+@mcp.tool()
+async def get_task_status(mythic_task_id: int) -> dict[str, Any]:
+    """Current status of a Mythic task by ticket (mythic_task_id from any run_* tool).
+    Live from redis, like ['status': 'running'|'completed'|'failed']. Poll this after run commands for long operations instead of blocking."""
+    events = _events_service()
+    if not events or not events.available:
+        return {"mythic_task_id": mythic_task_id, "status": "unknown"}
+    r = await events.get_task_status(mythic_task_id)
+    return {"mythic_task_id": mythic_task_id, **(r or {"status": "unknown"})}
+
+
+@mcp.tool()
+async def wait_task(mythic_task_id: int, timeout: int = 300) -> dict[str, Any]:
+    """Bounded wait for a Mythic task to reach terminal status (max timeout secs, keep 30-600). Returns final status like 'completed'/'failed'/'timeout'. Prefer get_task_status polling over very long waits."""
+    events = _events_service()
+    if not events or not events.available:
+        return {"mythic_task_id": mythic_task_id, "status": "unknown"}
+    # the agent does not really know realtime, cap the wait
+    timeout = min(max(int(timeout or 300), 1), 600)
+    status_out = await events.wait_for_task(mythic_task_id, timeout=timeout)
+    return {"mythic_task_id": mythic_task_id, "status": status_out}
 
 
 @mcp.tool()
@@ -445,3 +512,17 @@ async def get_chain_phases() -> list[dict[str, str]]:
     async with database_session.get_async_session() as session:
         chain_svc = ChainService(session)
         return await chain_svc.get_possible_phases()
+
+
+@mcp.tool()
+async def get_cve_info(cve_id: str) -> dict[str, Any]:
+    """Get CVE details: description, CWE ids, CVSS, references and GitHub PoC repositories."""
+    info = await lookup_cve(cve_id)
+    return asdict(info)
+
+
+@mcp.tool()
+async def search_cves_by_cpe(cpe: str, version: str | None = None) -> dict[str, Any]:
+    """Search CVEs by CPE 2.3 or software name/version; returns similar CPEs when the name is unknown."""
+    result = await lookup_cpe(cpe, version)
+    return asdict(result)

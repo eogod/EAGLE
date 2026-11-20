@@ -36,6 +36,22 @@ PROJECT_DIR = Path(__file__).parent.parent.parent
 LOG_LEVEL: str = "INFO"
 DEBUG_MODE_C: bool = False  # CHANGE ME BEFORE RUN
 
+# document-analysis agent caps: uploads are untrusted, so bounds live in
+# code instead of env; not deployment knobs
+MAX_DOCUMENT_MB = 25
+# text kept per document after parsing; anything past it is marked truncated
+MAX_DOCUMENT_CHARS = 240_000
+# LLM working window and how many windows one run will pay for
+CHUNK_CHARS = 12_000
+MAX_CHUNKS = 40
+
+AGENT_DEFAULT_PROVIDER = "ollama"
+AGENT_TEMPERATURE = 0.1
+AGENT_TIMEOUT = 300
+OPENROUTER_REFERER = "https://github.com/eogod/EAGLE"
+
+AGENT_WORKSPACE_DIR = PROJECT_DIR / "data" / "agent"
+
 
 class Security(BaseModel):
     jwt_issuer: str = "my-app"
@@ -45,6 +61,12 @@ class Security(BaseModel):
     password_bcrypt_rounds: int = 12
     allowed_hosts: list[str] = ["localhost", "127.0.0.1"]
     backend_cors_origins: list[AnyHttpUrl] = []
+    # registration is off, bootstrap admin below until role system exists
+    registration_enabled: bool = False
+    admin_email: str = ""
+    admin_password: str = ""
+    # Secure cookie flag, set True behind TLS/https, False on plain http Kali
+    cookie_secure: bool = False
 
 
 class Database(BaseModel):
@@ -69,10 +91,24 @@ class LLMservice(BaseModel):
     """env format like LLMSERVICE__API_URL=http..."""
 
     local: int = 0
-    api_url: HttpUrl = "http://localhost:69228"  # Для локального Ollama
-    api_key: str = None
+    # standard Ollama port; override with LLMSERVICE__API_URL when proxied
+    api_url: HttpUrl = HttpUrl("http://localhost:11434")
+    api_key: str | None = None
     timeout: int = 120
     default_model: str = "mistral"
+
+    # optional: OpenRouter is selectable in the agent panel, key is all it needs
+    openrouter_api_key: SecretStr | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+
+
+class Redis(BaseModel):
+    """env format like REDIS__PASSWORD=..., for hot task events only"""
+
+    hostname: str = "localhost"
+    port: int = 6379
+    password: SecretStr = SecretStr("passwd-change-me")
+    events_ttl: int = 4 * 60 * 60  # ttl of hot state, db lives longer
 
 
 class Mitre(BaseModel):
@@ -82,14 +118,82 @@ class Mitre(BaseModel):
     threat_groups_path: Path = PROJECT_DIR / "data" / "threat-groups.json"
 
 
+class MCP(BaseModel):
+    """env format like MCP__API_KEY=..., Unauthorized agents are not needed here"""
+
+    api_key: str = ""
+
+
+class WebTools(BaseModel):
+    """research tool budgets: unauthenticated NVD/DDG/GitHub, no API keys;
+    caps stay small so 64-128k-context models survive the loop"""
+
+    enabled: bool = True
+    # tool loop caps: few turns and few calls keep a small context window alive
+    max_tool_steps: int = 4
+    max_tool_calls: int = 5
+    search_results: int = 5
+    # chars of one page handed to the model per webfetch call
+    fetch_max_chars: int = 8_000
+    fetch_timeout: float = 20.0
+    max_response_bytes: int = 2_000_000
+    cache_ttl: int = 900
+    cache_entries: int = 32
+    # document excerpt shown to the research agent inside <untrusted_document>
+    excerpt_chars: int = 6_000
+    # target length of the loop's final answer
+    notes_max_chars: int = 3_000
+    # unauthenticated NVD API rate tier: 6s between requests, no key
+    nvd_min_interval: float = 6.0
+    # search politeness, seconds between DuckDuckGo POSTs
+    search_min_interval: float = 2.0
+    # lab/dev only: lift the SSRF guard so the agent can fetch internal URLs
+    allow_private_urls: bool = False
+
+
+class LocalBash(BaseModel):
+    """env format like LOCAL_BASH__ENABLED=1, direct bash on EAGLE host (Kali),
+    no C2 in the loop, safety comes from the deny list below and the flag"""
+
+    enabled: bool = False
+    shell: Path = Path("/bin/bash")
+    timeout: int = 300
+    max_timeout: int = 3600
+    # cut output to db/llm, full log always on disk in workspace_dir
+    max_output_chars: int = 200_000
+    workspace_dir: Path = PROJECT_DIR / "data" / "bash"
+    # one slot per concurrent request keeps a single host responsive
+    max_concurrent: int = 4
+    # TODO: allow per-chain deny-list overrides so a scenario can use ssh/scp or a listener.
+    # deny only destroy-the-box and stdin-hangers, the agent stays useful
+    reject: list[str] = [
+        r"rm\s+-rf\s+/\*?",  # rm -rf / and /*
+        r"rm\s+[^;&\n]*\s+/(?![\w./-])",  # rm (something) / -> nuked the root
+        r"\bmkfs(\.\w+)?\b",  # format the machine
+        r"\bdd\s+[^;&\n]*of=/dev/",  # raw write to a block device
+        r":\s*\(\s*\)\s*\{",  # fork bomb :(){ :|:& };:
+        r"\b(?:shutdown|reboot|poweroff|halt)(?:\.\w+)?\b",
+        r"\b(?:ssh|telnet|ftp|evil-winrm)\b",  # interactive shells hang on stdin
+        r"\bpsql\b(?![^;&\n]*-c\b)",  # psql without -c waits for input
+        r"\bmysql\b(?![^;&\n]*-e\b)",
+        r"\b(?:impacket-)?(?:psexec|wmiexec|smbexec|dcomexec)(?:\.py)?\b",  # drops into interactive shell without a command
+        r"\b(?:nc|ncat)\b[^;&\n]*\s-{1,2}l\w*\b",  # listener form hangs, one-shot nc is fine
+        r"\bsocat\b[^;&\n]*LISTEN",  # same, socat listening waits forever
+    ]
+
+
 class Settings(BaseSettings):
     """only to validate settings by pydantic"""
 
     security: Security = Field(default_factory=Security)
     database: Database = Field(default_factory=Database)
     mythic: Mythic = Field(default_factory=Mythic)
+    redis: Redis = Field(default_factory=Redis)
     llmservice: LLMservice = Field(default_factory=LLMservice)
     mitre: Mitre = Field(default_factory=Mitre)
+    mcp: MCP = Field(default_factory=MCP)
+    local_bash: LocalBash = Field(default_factory=LocalBash)
+    webtools: WebTools = Field(default_factory=WebTools)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
