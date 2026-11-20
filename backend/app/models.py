@@ -100,11 +100,13 @@ class AttackStep(Base):
     __tablename__ = "attack_step"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # TODO: add an explicit order column; imported steps cannot rely on insertion id.
     chain_id: Mapped[int] = mapped_column(
         ForeignKey("attack_chain.id", ondelete="CASCADE"),
     )
     # each step has a specific phase, which can differs from the current
     phase: Mapped[str] = mapped_column(String(64), nullable=False, unique=False)
+    # TODO: add network_path so a step says which agent or tunnel carries its traffic.
     # real router: local | agent | custom | payload | getcallback | bash,
     # tool_name below is just a label like nmap, shell, impacket-wmiexec
     step_type: Mapped[str] = mapped_column(
@@ -124,6 +126,15 @@ class AttackStep(Base):
     raw_log: Mapped[str] = mapped_column(Text, nullable=True, unique=False)
     # llm analysis of raw_log, run by explicit endpoint by agent/user
     llm_analysis: Mapped[str] = mapped_column(Text, nullable=True, unique=False)
+    # how long the attacker worked before this step, honoured only in timed runs
+    delay_before_secs: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    delay_reason: Mapped[str] = mapped_column(Text, nullable=True, unique=False)
+    # operator opt-out per step; a phase toggle flips it for the whole column
+    delay_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true"
+    )
     status: Mapped[str] = mapped_column(String(64), nullable=False, unique=False)
     executed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

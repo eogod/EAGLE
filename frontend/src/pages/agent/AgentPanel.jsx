@@ -59,6 +59,9 @@ export const AgentPanel = ({
   onToggleCollapse,
   onImportDraft,
   onChainChanged,
+  timingEnabled,
+  onToggleTiming,
+  plannedMinutes,
 }) => {
   const { sessionId, error: sessionError } = useAgentSession(chainId, chainName)
 
@@ -90,6 +93,27 @@ export const AgentPanel = ({
           <SidebarSimpleIcon size={14} />
         </button>
       </header>
+
+      <div className="flex items-center gap-2 border-b border-subtle px-3 py-2">
+        <label
+          className="flex items-center gap-1.5 text-[11px] text-muted"
+          title="Wait the drafted dwell before every batch step (20-90 min per chain)"
+        >
+          <input
+            type="checkbox"
+            checked={timingEnabled}
+            onChange={onToggleTiming}
+            className="accent-current"
+          />
+          Realistic timing
+        </label>
+        <span
+          className="ml-auto font-mono text-[11px] tabular-nums text-muted"
+          title="Planned dwell across the enabled steps"
+        >
+          {plannedMinutes}m
+        </span>
+      </div>
 
       {sessionError ? (
         <div className="p-3 text-xs text-danger">{sessionError}</div>

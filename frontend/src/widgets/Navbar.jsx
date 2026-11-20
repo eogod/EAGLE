@@ -3,9 +3,7 @@ import { CaretDownIcon, ListIcon } from '@phosphor-icons/react'
 import { ChainPopup } from './ChainPopup'
 import { chainApi } from '../entities/chainApi'
 import { api } from '../shared/api/axios'
-import { toast } from 'react-toastify'
 import { useMinify } from '../context/useMinify.js'
-import { runControl } from '../shared/runControl'
 
 const QuietButton = ({ children, className = '', ...props }) => (
   <button
@@ -25,6 +23,8 @@ export const NavBar = ({
   currentChain,
   layout = 'columns',
   onToggleLayout,
+  onRunChain,
+  onStopChain,
 }) => {
   const [chainsOpen, setChainsOpen] = useState(false)
   const [username, setUsername] = useState(null)
@@ -42,57 +42,6 @@ export const NavBar = ({
 
     loadUser()
   }, [])
-
-  const handleStopChain = async () => {
-    if (!currentChain) return
-
-    runControl.stop()
-    try {
-      await chainApi.cancelChain(currentChain.chain_id, currentChain.chain_name)
-      toast.warning('Chain stop requested. In-flight steps may report for a few minutes')
-    } catch {
-      toast.error('Could not stop the chain')
-    }
-  }
-
-  const handleRunChain = async () => {
-    if (!currentChain) return
-
-    const toastId = toast.loading('Running chain')
-
-    try {
-      const { steps, errors } = await chainApi.runChain(currentChain.chain_id)
-      if (errors.length) {
-        toast.update(toastId, {
-          render: `Chain stopped on ${errors.length} step(s): ${errors[0]}`,
-          type: 'error',
-          isLoading: false,
-          autoClose: 6000,
-        })
-      } else if (!steps.length) {
-        toast.update(toastId, {
-          render: 'Nothing to run: no pending or successful steps with a command',
-          type: 'warning',
-          isLoading: false,
-          autoClose: 5000,
-        })
-      } else {
-        toast.update(toastId, {
-          render: `Chain finished: ${steps.length} step(s) executed`,
-          type: 'success',
-          isLoading: false,
-          autoClose: 4000,
-        })
-      }
-    } catch (err) {
-      toast.update(toastId, {
-        render: err.message || 'Could not run the chain',
-        type: 'error',
-        isLoading: false,
-        autoClose: 6000,
-      })
-    }
-  }
 
   const handleLogout = async () => {
     // cookie session: revoke refresh server side, cookies die with the response
@@ -137,10 +86,10 @@ export const NavBar = ({
       </div>
 
       <div className="ml-auto flex items-center gap-1">
-        <QuietButton onClick={handleRunChain} disabled={!currentChain}>
+        <QuietButton onClick={onRunChain} disabled={!currentChain}>
           Run chain
         </QuietButton>
-        <QuietButton onClick={handleStopChain} disabled={!currentChain}>
+        <QuietButton onClick={onStopChain} disabled={!currentChain}>
           Stop
         </QuietButton>
 

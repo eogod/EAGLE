@@ -11,6 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.timing import runtime_delay
 from app.agent.validation import validate_draft
 from app.core.config import get_settings, phases
 from app.models import (
@@ -108,6 +109,9 @@ class AgentDraftService:
                     "callback_display_id": 0,
                     "status": "pending",
                     "raw_log": "",
+                    "delay_before_secs": step.get("delay_seconds", 0),
+                    "delay_reason": step.get("delay_reason", ""),
+                    "delay_enabled": True,
                     "rationale": step.get("rationale", ""),
                     "finding_ids": step.get("finding_ids", []),
                     "confidence": step.get("confidence", 0.0),
@@ -176,6 +180,8 @@ class AgentDraftService:
                 mythic_payload_id=0,
                 mythic_payload_uuid=str(uuid.uuid4()),
                 raw_log="",
+                delay_before_secs=step.get("delay_before_secs", 0),
+                delay_reason=step.get("delay_reason") or None,
                 status=row_status,
             )
             self.session.add(row)
@@ -218,14 +224,17 @@ class AgentDraftService:
         lines = [
             f"Chain: {chain.chain_name}",
             f"Current phase: {current or 'unknown'}",
-            "Steps (id | phase | type | tool | status | command | output):",
+            "Steps (id | phase | type | tool | status | delay | command | output):",
         ]
         for step in steps:
             command = (step.command or "").replace("\n", " ")[:180]
             output = (step.raw_log or "").replace("\n", " ")[:180]
+            delay = (
+                f"{step.delay_before_secs // 60}m" if step.delay_before_secs else "-"
+            )
             lines.append(
                 f"- {step.id} | {step.phase} | {step.step_type} | {step.tool_name} "
-                f"| {step.status} | {command} | {output}"
+                f"| {step.status} | {delay} | {command} | {output}"
             )
             if sum(len(line) for line in lines) > _MAX_CHAIN_CONTEXT_CHARS:
                 lines.append("- … chain truncated")
@@ -291,6 +300,11 @@ class AgentDraftService:
         if not command:
             raise EditError("add_step needs a command")
 
+        try:
+            delay = runtime_delay(int(op.get("delay_seconds") or 0))
+        except (TypeError, ValueError):
+            delay = 0
+
         row = AttackStep(
             chain_id=chain.id,
             phase=phase,
@@ -301,6 +315,8 @@ class AgentDraftService:
             mythic_payload_id=0,
             mythic_payload_uuid=str(uuid.uuid4()),
             raw_log="",
+            delay_before_secs=delay,
+            delay_reason=str(op.get("delay_reason") or "").strip()[:200] or None,
             status="pending",
         )
         self.session.add(row)

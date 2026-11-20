@@ -174,6 +174,7 @@ class MythicClient:
                 cmd_list.append(cmd["cmd"])
         return cmd_list
 
+    # TODO: add a console driver (send line, wait for prompt) for interactive tools.
     async def pivoting_agent(self, display_id, lport, agent_type) -> str:
         """forward agent via itself, return status"""
         command_name, parameters = "", ""

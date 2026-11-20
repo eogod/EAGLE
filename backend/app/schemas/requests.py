@@ -47,6 +47,7 @@ class LocalCommandRequest(BaseRequest):
 class BashCommandRequest(BaseRequest):
     """direct bash on EAGLE host, no C2, ticket + redis events"""
 
+    # TODO: add env, cwd, shell and run_as fields so each step carries its own environment.
     chain_name: str
     command: str
     timeout: int = 300

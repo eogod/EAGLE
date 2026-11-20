@@ -354,6 +354,31 @@ async def edit_step(
         "command": step.command,
         "status": step.status,
         "raw_log": step.raw_log,
+        "delay_before_secs": step.delay_before_secs,
+        "delay_reason": step.delay_reason,
+        "delay_enabled": step.delay_enabled,
+    }
+
+
+@router.patch(
+    "/chain/{chain_id}/delay",
+    description="Enable or disable dwell for every step of one phase",
+)
+async def set_phase_timing(
+    chain_id: int,
+    phase: str,
+    enabled: bool,
+    current_user: User = Depends(deps.get_current_user),
+    chain_service: ChainService = Depends(get_chain_service),
+) -> dict[str, Any]:
+    updated = await chain_service.set_phase_timing(
+        chain_id, phase, enabled, current_user
+    )
+    return {
+        "chain_id": chain_id,
+        "phase": phase,
+        "enabled": enabled,
+        "updated": updated,
     }
 
 
@@ -409,6 +434,7 @@ async def reject_last_step_or_cmd(
 async def run_chain(  # noqa: PLR0913, PLR0917
     chain_id: int,
     zero_display_id: int,
+    timing: bool = False,
     current_user: User = Depends(deps.get_current_user),
     chain_service: ChainService = Depends(get_chain_service),
     chain_execution_service: ChainExecutionService = Depends(
@@ -422,7 +448,7 @@ async def run_chain(  # noqa: PLR0913, PLR0917
     chain_controller.active_chains[chain_id] = cancel_event
     return StreamingResponse(
         chain_execution_service.perform_chain_step(
-            sorted_steps, zero_display_id, cancel_event
+            sorted_steps, zero_display_id, cancel_event, timing
         ),
         media_type="application/json",
     )

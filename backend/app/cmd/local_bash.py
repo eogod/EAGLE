@@ -153,6 +153,7 @@ async def _communicate(proc, timeout: int, chain_id: int | None):
         _untrack(proc.pid, chain_id)
 
 
+# TODO: add a detached service runner (start/stop/health); run_bash kills the group.
 async def run_bash(  # noqa: PLR0915
     command: str,
     timeout: int | None = None,

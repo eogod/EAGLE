@@ -69,7 +69,7 @@ const ResizeHandle = ({ onStart, onFit, title }) => (
   </div>
 )
 
-export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate }) => {
+export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, timing }) => {
   const cmdRef = useRef(null)
   const outRef = useRef(null)
   const heightKey = `${step.chain_name}:${step.id ?? step._tempId}`
@@ -78,10 +78,30 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate }) =
 
   const { minified } = useMinify()
   const [elapsed, setElapsed] = useState(0)
+  const [waitNow, setWaitNow] = useState(() => Date.now())
   const startTimeRef = useRef(null)
   const intervalRef = useRef(null)
   const isAgent = step.step_type === STEP_TYPES.AGENT
   const isBash = step.step_type === STEP_TYPES.BASH
+  const delayMinutes = Math.round((step.delay_before_secs ?? 0) / 60)
+
+  // phase runs count down locally; chain runs stream the same wall clock
+  useEffect(() => {
+    if (!step.wait_until) return
+
+    const id = setInterval(() => setWaitNow(Date.now()), 250)
+    return () => clearInterval(id)
+  }, [step.wait_until])
+
+  const waitLeft = step.wait_until
+    ? Math.max(
+        0,
+        Math.min(
+          step.wait_seconds ?? Number.MAX_SAFE_INTEGER,
+          Math.round((step.wait_until - waitNow) / 1000),
+        ),
+      )
+    : 0
 
   // backend drives run state by events stream, here just elapsed clock
   useEffect(() => {
@@ -210,6 +230,9 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate }) =
         <span className={`ml-auto shrink-0 font-mono text-[11px] ${meta.cls}`}>
           {meta.label}
           {step.status === STEP_STATUS.RUNNING ? ` ${elapsed}s` : ''}
+          {waitLeft > 0
+            ? ` wait ${Math.floor(waitLeft / 60)}:${String(waitLeft % 60).padStart(2, '0')}`
+            : ''}
         </span>
       </div>
 
@@ -247,6 +270,46 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate }) =
             value={step.tool ?? ''}
             onChange={(e) => onUpdate(step.id ?? step._tempId, { tool: e.target.value })}
             placeholder="shell, libinject…"
+          />
+        </div>
+      )}
+
+      {timing?.enabled && (
+        <div className="mb-2 flex items-center gap-2">
+          <label
+            className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted"
+            title="Wait this long before running the step"
+          >
+            <input
+              type="checkbox"
+              checked={step.delay_enabled !== false}
+              onChange={(event) =>
+                onUpdate(step.id ?? step._tempId, { delay_enabled: event.target.checked })
+              }
+              className="accent-current"
+            />
+            Dwell
+          </label>
+          <Input
+            type="text"
+            inputMode="numeric"
+            value={delayMinutes}
+            onChange={(event) =>
+              onUpdate(step.id ?? step._tempId, {
+                delay_before_secs: (parseInt(event.target.value, 10) || 0) * 60,
+              })
+            }
+            className="h-7 w-12 px-1.5 font-mono text-[11px] [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          />
+          <span className="shrink-0 text-[11px] text-muted">min</span>
+          <Input
+            type="text"
+            value={step.delay_reason ?? ''}
+            onChange={(event) =>
+              onUpdate(step.id ?? step._tempId, { delay_reason: event.target.value })
+            }
+            placeholder="what the attacker did in that time"
+            className="h-7 min-w-0 flex-1 px-1.5 text-[11px]"
           />
         </div>
       )}

@@ -12,6 +12,8 @@ from app.models import AttackStep
 # a finished step can be replayed in place: same row, same id, new output
 REUSABLE_STATUSES = ("planned", "pending", "success", "fail", "failed", "error")
 
+# TODO: append a run record instead of overwriting the planned row (see README TODO).
+
 
 def reusable(target: AttackStep | None, chain_id: int) -> AttackStep | None:
     if target is None or target.chain_id != chain_id:

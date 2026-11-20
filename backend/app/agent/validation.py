@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agent.timing import REPORT_SOURCE, apply_dwell
+
 ALLOWED_STEP_TYPES = ("local", "agent", "bash")
 MAX_COMMAND_CHARS = 4000
 MAX_STEPS = 40
@@ -152,6 +154,12 @@ def _parse_step(
             f"step {index}: command uses placeholder {placeholder.group(0)}"
         )
 
+    try:
+        delay_seconds = int(raw.get("delay_seconds") or 0)
+    except TypeError, ValueError:
+        delay_seconds = 0
+    delay_source = str(raw.get("delay_source") or "").strip().lower()
+
     is_dangerous = any(p.search(command) for p in rules.patterns)
     if is_dangerous:
         report.dangerous.append(index)
@@ -168,6 +176,10 @@ def _parse_step(
         "uncertainty": str(raw.get("uncertainty") or "").strip(),
         "dangerous": is_dangerous,
         "client_id": f"draft-{index}",
+        "delay_seconds": max(0, delay_seconds),
+        "delay_reason": str(raw.get("delay_reason") or "").strip()[:200],
+        # keeps the total fitting stable when the draft is re-validated on import
+        "delay_source": delay_source if delay_source == REPORT_SOURCE else "estimate",
     }
 
 
@@ -226,6 +238,7 @@ def validate_draft(
 
     _warn_duplicates(steps, report.warnings)
     _renumber(steps, {name: i for i, name in enumerate(phase_names)}, len(phase_names))
+    report.warnings.extend(apply_dwell(steps))
 
     if report.dangerous:
         report.warnings.append(

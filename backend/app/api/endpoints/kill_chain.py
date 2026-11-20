@@ -20,6 +20,8 @@ from app.services.llm_service import llm_service
 
 router = APIRouter()
 
+# TODO: add POST /import-chain that reads this export format back into planned steps.
+
 
 def result_to_dict_recursive(
     instance: Any, visited: set | None = None
@@ -167,3 +169,6 @@ async def export_yaml(
             "Content-Disposition": f"attachment; filename=export_{chain_name}.yaml"
         },
     )
+
+
+# TODO: export a run manifest too: run id, timings, artifacts and assertion results.

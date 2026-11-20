@@ -9,7 +9,14 @@ import { useRunPhase } from '../../features/useRunPhase'
 import { useAddPhase } from '../../features/useAddPhase'
 import { toast } from 'react-toastify'
 
-export const ChainCanvas = ({ currentChain, onSetPhase, reloadToken = 0, layout = 'columns' }) => {
+export const ChainCanvas = ({
+  currentChain,
+  onSetPhase,
+  reloadToken = 0,
+  layout = 'columns',
+  timing,
+  onTimingSummary,
+}) => {
   const tempIdRef = useRef(0)
 
   const [phases, setPhases] = useState(() => {
@@ -55,6 +62,9 @@ export const ChainCanvas = ({ currentChain, onSetPhase, reloadToken = 0, layout 
             tool: isAgent ? step.tool_name : 'shell',
             status: step.status,
             raw_log: step.raw_log,
+            delay_before_secs: step.delay_before_secs ?? 0,
+            delay_reason: step.delay_reason ?? '',
+            delay_enabled: step.delay_enabled ?? true,
           })
         }
 
@@ -114,6 +124,9 @@ export const ChainCanvas = ({ currentChain, onSetPhase, reloadToken = 0, layout 
             tool: isAgent ? step.tool_name : 'shell',
             status: step.status,
             raw_log: step.raw_log,
+            delay_before_secs: step.delay_before_secs ?? 0,
+            delay_reason: step.delay_reason ?? '',
+            delay_enabled: step.delay_enabled ?? true,
           })
         }
 
@@ -176,8 +189,14 @@ export const ChainCanvas = ({ currentChain, onSetPhase, reloadToken = 0, layout 
       patch.step_type !== undefined ||
       patch.callback_display_id !== undefined
 
+    // dwell edits persist as well, but they must not move the card
+    const isTiming =
+      patch.delay_before_secs !== undefined ||
+      patch.delay_reason !== undefined ||
+      patch.delay_enabled !== undefined
+
     // temp/imported steps have no DB row yet; a PATCH would 404 them
-    if (!isLocalOnly && isEdit) {
+    if (!isLocalOnly && (isEdit || isTiming)) {
       try {
         await stepApi.updateStep(stepId, patch)
         // only an edited command/tool changes the chain order; status and
@@ -207,8 +226,42 @@ export const ChainCanvas = ({ currentChain, onSetPhase, reloadToken = 0, layout 
     }
   }, [])
 
+  // one request flips dwell for every step in the column
+  const togglePhaseTiming = useCallback(
+    async (phaseName, enabled) => {
+      if (!currentChain) return
+      const phaseId = UCKC_PHASES.find((p) => p.name === phaseName)?.id ?? phaseName
+
+      setStepsByPhase((prev) => {
+        const list = prev[phaseId]
+        if (!list) return prev
+        return {
+          ...prev,
+          [phaseId]: list.map((step) => ({ ...step, delay_enabled: enabled })),
+        }
+      })
+
+      try {
+        await stepApi.updatePhaseTiming(currentChain.chain_id, phaseName, enabled)
+      } catch {
+        toast.error('Could not change timing for the phase')
+      }
+    },
+    [currentChain],
+  )
+
+  // the agent panel shows what enabling timing would cost before it is enabled
+  useEffect(() => {
+    const steps = Object.values(stepsByPhase).flat()
+    const plannedSecs = steps.reduce(
+      (sum, step) => sum + (step.delay_enabled === false ? 0 : (step.delay_before_secs ?? 0)),
+      0,
+    )
+    onTimingSummary?.({ plannedSecs, steps: steps.length })
+  }, [stepsByPhase, onTimingSummary])
+
   const { run } = useRunStep()
-  const { run: runPhase } = useRunPhase(updateStep)
+  const { run: runPhase } = useRunPhase(updateStep, { timing: timing?.enabled })
   const { addPhase: handleAddPhase } = useAddPhase(currentChain?.chain_id ?? null)
 
   const addStep = useCallback(
@@ -227,6 +280,9 @@ export const ChainCanvas = ({ currentChain, onSetPhase, reloadToken = 0, layout 
         tool: 'shell',
         status: STEP_STATUS.PENDING,
         raw_log: '',
+        delay_before_secs: 0,
+        delay_reason: '',
+        delay_enabled: true,
       }
 
       setStepsByPhase((prev) => ({
@@ -366,6 +422,8 @@ export const ChainCanvas = ({ currentChain, onSetPhase, reloadToken = 0, layout 
             isLast={idx === phases.length - 1}
             stacked={layout === 'rows'}
             existingOrders={existingOrders}
+            timing={timing}
+            onTogglePhaseTiming={(enabled) => togglePhaseTiming(phase.name, enabled)}
           />
         ))}
       </div>

@@ -62,6 +62,7 @@ async def process_approved_cmd(  # noqa: PLR0911  # one return per step_type bra
     tracker of MythicTask saved by events service via redis"""
     # one return per step_type branch, the switch is the point here
     # noqa: PLR0911
+    # TODO: add a manual step type that pauses the chain until an operator confirms.
     supported_type_n = ["local", "agent", "custom", "payload", "getcallback", "bash"]
     if cb.step_type not in supported_type_n:
         raise HTTPException(

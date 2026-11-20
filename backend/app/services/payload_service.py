@@ -23,6 +23,7 @@ class AgentPayloadService:
         self.session = session
         self.mythic_client = mythic_client
 
+    # TODO: add local build recipes with a pinned toolchain; Mythic is the only build path.
     async def create_payload(
         self,
         chain_id: int,

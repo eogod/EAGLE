@@ -29,6 +29,8 @@ export const Column = ({
   isLast,
   stacked = false,
   existingOrders,
+  timing,
+  onTogglePhaseTiming,
 }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [beforeDropdownOpen, setBeforeDropdownOpen] = useState(false)
@@ -36,6 +38,12 @@ export const Column = ({
   const [beforeSearch, setBeforeSearch] = useState('')
   const dropdownRef = useRef(null)
   const beforeDropdownRef = useRef(null)
+
+  const dwellSecs = steps.reduce(
+    (sum, step) => sum + (step.delay_enabled === false ? 0 : (step.delay_before_secs ?? 0)),
+    0,
+  )
+  const dwellOn = steps.length > 0 && steps.every((step) => step.delay_enabled !== false)
 
   useEffect(() => {
     if (!dropdownOpen) return
@@ -125,6 +133,21 @@ export const Column = ({
             >
               {phase.name}
             </span>
+
+            {timing?.enabled && (
+              <label
+                className="ml-auto flex shrink-0 items-center gap-1 text-[11px] tabular-nums text-muted"
+                title="Enable or disable dwell for this phase"
+              >
+                <input
+                  type="checkbox"
+                  checked={dwellOn}
+                  onChange={(event) => onTogglePhaseTiming(event.target.checked)}
+                  className="accent-current"
+                />
+                {Math.round(dwellSecs / 60)}m
+              </label>
+            )}
           </div>
 
           <div className="flex shrink-0 gap-0.5">
@@ -239,6 +262,7 @@ export const Column = ({
                 onDelete={onDeleteStep}
                 onCopy={onCopyStep}
                 onUpdate={onUpdateStep}
+                timing={timing}
               />
             ))
           )}

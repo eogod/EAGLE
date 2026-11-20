@@ -164,6 +164,7 @@ class LocalBash(BaseModel):
     workspace_dir: Path = PROJECT_DIR / "data" / "bash"
     # one slot per concurrent request keeps a single host responsive
     max_concurrent: int = 4
+    # TODO: allow per-chain deny-list overrides so a scenario can use ssh/scp or a listener.
     # deny only destroy-the-box and stdin-hangers, the agent stays useful
     reject: list[str] = [
         r"rm\s+-rf\s+/\*?",  # rm -rf / and /*

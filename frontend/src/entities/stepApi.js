@@ -84,4 +84,10 @@ export const stepApi = {
   deleteStep: (stepId) => api.delete(`${BASE}/step/${stepId}`).then((res) => res.data),
 
   updateStep: (stepId, patch) => api.patch(`${BASE}/step/${stepId}`, patch).then((res) => res.data),
+
+  // one phase checkbox flips dwell for the whole column
+  updatePhaseTiming: (chainId, phase, enabled) =>
+    api
+      .patch(`${BASE}/chain/${chainId}/delay`, null, { params: { phase, enabled } })
+      .then((res) => res.data),
 }

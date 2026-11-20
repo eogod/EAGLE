@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.agent.timing import runtime_delay
 from app.core.config import phases
 from app.models import AttackChain, AttackStep, CurrentAttackPhase, User
 from app.services.ttp_info_service import UKC_PHASE_DESCRIPTIONS
@@ -246,14 +247,48 @@ class ChainService:
         if chain is None or chain.user_id != current_user.user_id:
             raise HTTPException(status_code=404, detail="Chain not found")
 
-        allowed_fields = {"tool_name", "step_type", "command", "raw_log", "status"}
+        allowed_fields = {
+            "tool_name",
+            "step_type",
+            "command",
+            "raw_log",
+            "status",
+            "delay_before_secs",
+            "delay_reason",
+            "delay_enabled",
+        }
         for field, value in patch.items():
-            if field in allowed_fields:
-                setattr(step, field, value)
+            if field not in allowed_fields:
+                continue
+            if field == "delay_before_secs":
+                try:
+                    seconds = int(value or 0)
+                except (TypeError, ValueError):
+                    continue
+                setattr(step, field, runtime_delay(seconds))
+                continue
+            setattr(step, field, value)
 
         await self.session.commit()
         await self.session.refresh(step)
         return step
+
+    async def set_phase_timing(
+        self, chain_id: int, phase: str, enabled: bool, current_user: User
+    ) -> int:
+        """the phase checkbox flips every step in that column at once."""
+        chain = await self.session.get(AttackChain, chain_id)
+        if chain is None or chain.user_id != current_user.user_id:
+            raise HTTPException(status_code=404, detail="Chain not found")
+
+        result = await self.session.execute(
+            update(AttackStep)
+            .where(AttackStep.chain_id == chain_id, AttackStep.phase == phase)
+            .values(delay_enabled=enabled)
+        )
+        await self.session.commit()
+
+        return int(getattr(result, "rowcount", 0) or 0)
 
     @staticmethod
     async def get_possible_phases() -> list[dict[str, str]]:

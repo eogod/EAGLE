@@ -164,6 +164,7 @@ class BashCommandService:
             None,
         )
         try:
+            # TODO: pass env and cwd from the request into run_bash; it already accepts cwd.
             result = await run_bash(
                 command,
                 timeout=timeout,

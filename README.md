@@ -163,3 +163,21 @@ operational notes into the chain draft. Budgets and the on/off switch live in
 Export a chain (with or without LLM analysis) via **/export-chain/json** or **/export-chain/yaml** to `JSON` or `YAML`.
 
 Similar to how diving into [Mythic python library](https://github.com/MythicMeta/Mythic_Scripting/blob/master/mythic/mythic.py) source code clarifies its functionality, examining the other Swagger endpoints and read `EAGLE` codebase provides deeper insight into using it effectively. If anything is unclear, write it in the [issues](https://github.com/eogod/EAGLE/issues) section.
+
+## TODO
+
+Below are the larger pieces a full scenario run still needs. The smaller ones are marked with `# TODO` in the code.
+
+- **/import-chain** should read the same `JSON` / `YAML` that **/export-chain** writes and create planned steps. A separate run record would keep the plan apart from each execution, so a replay appends history instead of overwriting `AttackStep`.
+
+- A chain should declare variables, capture values from `raw_log` with a regex or JSONPath, and substitute them into later commands. This covers hostnames, ports, artifact names and keys that change between runs.
+
+- Listeners and tunnels need start, stop and health checks that outlive one step. Interactive tools need a driver that sends a line and waits for the prompt.
+
+- A step should declare which agent or tunnel carries its traffic, and the runner should check the route and source address before it executes.
+
+- Upload and download steps, an artifact registry with hashes and a naming policy, and local build recipes with a pinned toolchain are still missing. Mythic payloads are the only build path today.
+
+- A run manifest should export the run id, timings, artifacts and assertion results. Optional post-run checks can query external telemetry and record the outcome.
+
+- Independent services and scans should run concurrently, and each step should choose whether a failure stops the chain, retries or jumps to a fallback.

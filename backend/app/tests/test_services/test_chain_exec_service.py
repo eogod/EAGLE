@@ -57,6 +57,8 @@ async def test_custom_step_output_is_analyzed_in_chain_exec(monkeypatch):
         step_type="custom",
         tool_name="custom_tool",
         command="do a thing",
+        delay_before_secs=0,
+        delay_enabled=True,
     )
     service = ChainExecutionService(session=None, mythic_client=None)  # type: ignore[arg-type]
 

@@ -33,12 +33,15 @@ export const chainApi = {
 
   // run-chain streams one JSON line per executed step; consume it so the UI
   // can report what actually happened instead of a blind "started"
-  runChain: async (chainId) => {
-    const response = await fetch(`${FETCH_BASE}/run-chain/${chainId}?zero_display_id=0`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { Accept: 'application/json' },
-    })
+  runChain: async (chainId, { timing = false, onEvent } = {}) => {
+    const response = await fetch(
+      `${FETCH_BASE}/run-chain/${chainId}?zero_display_id=0&timing=${timing}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      },
+    )
     if (!response.ok) {
       let detail = `run failed (${response.status})`
       try {
@@ -71,6 +74,7 @@ export const chainApi = {
             const payload = JSON.parse(line)
             if (payload.AttackStep) steps.push(payload.AttackStep)
             if (payload.error) errors.push(payload.error)
+            if (payload.type) onEvent?.(payload)
           } catch {
             // ignore a malformed line, keep reading
           }
