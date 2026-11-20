@@ -238,11 +238,11 @@ def _use_transport(monkeypatch, nvd, github, calls, cpes=None) -> None:
     cpe_queue = list(cpes or [])
 
     def handler(request: httpx.Request) -> httpx.Response:
-        url = str(request.url)
-        calls.append(url)
-        if "/cpes/" in url:
+        url = request.url
+        calls.append(str(url))
+        if url.path.startswith("/rest/json/cpes/"):
             queue = cpe_queue
-        elif "nvd.nist.gov" in url:
+        elif url.host == "services.nvd.nist.gov":
             queue = nvd_queue
         else:
             queue = gh_queue
