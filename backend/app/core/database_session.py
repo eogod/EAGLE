@@ -17,6 +17,9 @@ from app.core.config import get_settings
 
 def new_async_engine(uri: URL) -> AsyncEngine:
     """just connect to DB and create connection pool engine"""
+    if uri.get_backend_name() == "sqlite":
+        # tests only: aiosqlite has no pool tuning below
+        return create_async_engine(uri)
     return create_async_engine(
         uri,
         pool_pre_ping=True,

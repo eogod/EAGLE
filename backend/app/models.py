@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
@@ -29,6 +30,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# the tests run on aiosqlite (see conftest), production stays on postgres;
+# sqlite needs INTEGER for autoincrement ids and has no JSONB
+BigIntPk = BigInteger().with_variant(Integer, "sqlite")
+JSONValue = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Base(DeclarativeBase):
@@ -61,7 +67,7 @@ class User(Base):
 class RefreshToken(Base):
     __tablename__ = "refresh_token"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True)
     refresh_token: Mapped[str] = mapped_column(
         String(512), nullable=False, unique=True, index=True
     )
@@ -76,7 +82,7 @@ class RefreshToken(Base):
 class AttackChain(Base):
     __tablename__ = "attack_chain"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(
         ForeignKey("user_account.user_id", ondelete="CASCADE"),
     )
@@ -99,7 +105,7 @@ class AttackChain(Base):
 class AttackStep(Base):
     __tablename__ = "attack_step"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     # TODO: add an explicit order column; imported steps cannot rely on insertion id.
     chain_id: Mapped[int] = mapped_column(
         ForeignKey("attack_chain.id", ondelete="CASCADE"),
@@ -157,7 +163,7 @@ class AttackStep(Base):
 class MythicTask(Base):
     __tablename__ = "mythic_task"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     # ticket from mythic issue_task, live status for it in redis by this id
     mythic_task_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
     step_id: Mapped[int] = mapped_column(
@@ -183,7 +189,7 @@ class MythicTask(Base):
 class BashTask(Base):
     __tablename__ = "bash_task"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     step_id: Mapped[int] = mapped_column(
         ForeignKey("attack_step.id", ondelete="CASCADE"),
     )
@@ -209,7 +215,7 @@ class BashTask(Base):
 class CurrentAttackPhase(Base):
     __tablename__ = "current_attack_phase"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     # chain always start with Reconnaissance
     phase: Mapped[str] = mapped_column(
         String(64), nullable=False, default="Reconnaissance"
@@ -228,7 +234,7 @@ class CurrentAttackPhase(Base):
 class Agent(Base):
     __tablename__ = "agent"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     step_id: Mapped[int] = mapped_column(
         ForeignKey("attack_step.id", ondelete="CASCADE"),
     )
@@ -247,7 +253,7 @@ class AgentSession(Base):
 
     __tablename__ = "agent_session"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(
         ForeignKey("user_account.user_id", ondelete="CASCADE"),
         index=True,
@@ -284,14 +290,14 @@ class AgentMessage(Base):
 
     __tablename__ = "agent_message"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(
         ForeignKey("agent_session.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)
-    content: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    content: Mapped[list] = mapped_column(JSONValue, nullable=False, default=list)
     run_id: Mapped[int | None] = mapped_column(
         ForeignKey("agent_run.id", ondelete="SET NULL"), nullable=True
     )
@@ -304,7 +310,7 @@ class AgentDocument(Base):
 
     __tablename__ = "agent_document"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(
         ForeignKey("agent_session.id", ondelete="CASCADE"),
         nullable=False,
@@ -329,7 +335,7 @@ class AgentDocument(Base):
 class AgentRun(Base):
     __tablename__ = "agent_run"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(
         ForeignKey("agent_session.id", ondelete="CASCADE"),
         nullable=False,
@@ -358,7 +364,7 @@ class AgentFinding(Base):
 
     __tablename__ = "agent_finding"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     run_id: Mapped[int] = mapped_column(
         ForeignKey("agent_run.id", ondelete="CASCADE"),
         nullable=False,
@@ -376,7 +382,7 @@ class AgentFinding(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     uncertainty: Mapped[str | None] = mapped_column(Text, nullable=True)
     # [{segment_id, page, char_start, char_end, quote}]
-    evidence: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    evidence: Mapped[list] = mapped_column(JSONValue, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="accepted")
 
     run: Mapped[AgentRun] = relationship()
@@ -387,7 +393,7 @@ class ChainDraft(Base):
 
     __tablename__ = "chain_draft"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(
         ForeignKey("agent_session.id", ondelete="CASCADE"),
         nullable=False,
@@ -404,6 +410,6 @@ class ChainDraft(Base):
         String(32), nullable=False, default="needs_review"
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    payload: Mapped[dict] = mapped_column(JSONValue, nullable=False, default=dict)
 
     session: Mapped[AgentSession] = relationship(back_populates="drafts")
