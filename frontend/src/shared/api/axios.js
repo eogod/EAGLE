@@ -12,8 +12,10 @@ let refreshInFlight = null
 
 const runSilentRefresh = () => {
   if (refreshInFlight) return refreshInFlight
+  // no body: the backend takes the refresh token from the HttpOnly cookie;
+  // a body must be a full RefreshTokenRequest, so `{_retried: true}` is a 422
   refreshInFlight = api
-    .post('/auth/refresh-token', { _retried: true })
+    .post('/auth/refresh-token')
     .then(() => true)
     .catch(() => false)
     .finally(() => {
