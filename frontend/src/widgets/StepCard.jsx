@@ -15,6 +15,7 @@ import {
 const statusMeta = {
   planned: { label: 'planned', cls: 'text-accent' },
   pending: { label: 'pending', cls: 'text-muted' },
+  submitted: { label: 'submitted', cls: 'text-muted' },
   running: { label: 'running', cls: 'text-warning' },
   success: { label: 'success', cls: 'text-success' },
   error: { label: 'error', cls: 'text-danger' },

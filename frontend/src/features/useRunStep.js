@@ -3,6 +3,10 @@ import { stepApi } from '../entities/stepApi'
 import { chainApi } from '../entities/chainApi'
 import { STEP_STATUS, STEP_TYPES } from '../entities/types'
 
+// task death as the backend reports it: mythic sends error/cancelled,
+// bash sends fail/failed
+const FAILED_STATUSES = new Set(['fail', 'failed', 'error', 'cancelled'])
+
 const cleanBytesOutput = (output) => {
   // output is raw cuz different langs on remote hosts
   if (!output || typeof output !== 'string') return output
@@ -95,6 +99,7 @@ export const useRunStep = () => {
       const controller = new AbortController()
       let resolved = false
       let closing = false
+      let failed = false
 
       // terminal status arrives before the output row; stay open briefly so
       // the output is not wiped, then give up if nothing else comes
@@ -117,7 +122,7 @@ export const useRunStep = () => {
             if (kind === 'snapshot') {
               // fast commands can finish before the stream attaches
               const snap = event.step
-              if (snap && ['success', 'fail', 'error'].includes(snap.status)) {
+              if (snap && (snap.status === 'success' || FAILED_STATUSES.has(snap.status))) {
                 const out =
                   (snap.bash_tasks || []).find((t) => t.output)?.output ??
                   (snap.tasks || []).find((t) => t.output)?.output
@@ -137,7 +142,11 @@ export const useRunStep = () => {
               resolved = true
               controller.abort()
               onUpdate?.(id, {
-                status: STEP_STATUS.SUCCESS,
+                // mythic output rows carry no status, so keep the failure seen earlier
+                status:
+                  failed || FAILED_STATUSES.has(event.status)
+                    ? STEP_STATUS.ERROR
+                    : STEP_STATUS.SUCCESS,
                 raw_log: cleanBytesOutput(event.raw_log ?? ''),
               })
               return
@@ -154,10 +163,12 @@ export const useRunStep = () => {
               return
             }
             if (kind === 'status') {
-              if (event.status === 'failed' || event.status === 'fail') {
-                resolved = true
-                controller.abort()
-                onUpdate?.(id, { status: STEP_STATUS.ERROR, raw_log: event.status })
+              if (FAILED_STATUSES.has(event.status)) {
+                // the output row comes after the terminal status: keep the
+                // stream open so the real log lands, not the word "failed"
+                failed = true
+                onUpdate?.(id, { status: STEP_STATUS.ERROR })
+                closeSoon()
                 return
               }
               if (event.completed) {
