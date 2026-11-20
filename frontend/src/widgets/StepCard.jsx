@@ -239,7 +239,13 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
 
       {!isBash && (
         <div className="mb-2 flex items-center gap-2">
-          <span className="text-[11px] text-muted">Callback</span>
+          {/* a callback is chosen at run time and is not stored with the step */}
+          <span
+            className="text-[11px] text-muted"
+            title="Picked at run time, not saved with the chain"
+          >
+            Callback
+          </span>
           <Input
             type="text"
             inputMode="numeric"
@@ -254,13 +260,16 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
         </div>
       )}
 
-      {/* tool name depends on mythic agent tools and proc.py */}
-      <TransparentInput
-        type="text"
-        value={step.tool_name ?? ''}
-        onChange={(e) => onUpdate(step.id ?? step._tempId, { tool_name: e.target.value })}
-        placeholder="Tool name"
-      />
+      {/* tool name depends on mythic agent tools and proc.py; agent steps
+          keep it in the same db column, so only one input may own it */}
+      {!isAgent && (
+        <TransparentInput
+          type="text"
+          value={step.tool_name ?? ''}
+          onChange={(e) => onUpdate(step.id ?? step._tempId, { tool_name: e.target.value })}
+          placeholder="Tool name"
+        />
+      )}
 
       {/* if runned on remote mythic agent */}
       {isAgent && (

@@ -187,7 +187,22 @@ export const ChainCanvas = ({
       patch.command !== undefined ||
       patch.tool_name !== undefined ||
       patch.step_type !== undefined ||
-      patch.callback_display_id !== undefined
+      // agent cards edit the same db columns under their own names
+      patch.command_params !== undefined ||
+      patch.tool !== undefined
+
+    // the card names agent fields command_params/tool, the API stores both in
+    // command/tool_name; callback_display_id is per-run, not persisted
+    const patchForApi = { ...patch }
+    if (patchForApi.command_params !== undefined) {
+      patchForApi.command = patchForApi.command_params
+      delete patchForApi.command_params
+    }
+    if (patchForApi.tool !== undefined) {
+      patchForApi.tool_name = patchForApi.tool
+      delete patchForApi.tool
+    }
+    delete patchForApi.callback_display_id
 
     // dwell edits persist as well, but they must not move the card
     const isTiming =
@@ -198,7 +213,7 @@ export const ChainCanvas = ({
     // temp/imported steps have no DB row yet; a PATCH would 404 them
     if (!isLocalOnly && (isEdit || isTiming)) {
       try {
-        await stepApi.updateStep(stepId, patch)
+        await stepApi.updateStep(stepId, patchForApi)
         // only an edited command/tool changes the chain order; status and
         // output patches must not move the card
         if (isEdit) {
@@ -217,7 +232,12 @@ export const ChainCanvas = ({
           })
         }
 
-        if (isEdit && (patch.command !== undefined || patch.tool_name !== undefined)) {
+        if (
+          patch.command !== undefined ||
+          patch.tool_name !== undefined ||
+          patch.command_params !== undefined ||
+          patch.tool !== undefined
+        ) {
           toast.info('Step moved to the end of its phase')
         }
       } catch {

@@ -176,6 +176,9 @@ const ChainManagementView = () => {
       })
     } finally {
       setRun(null)
+      // the run leaves final statuses/raw_logs in the db, the canvas keeps
+      // whatever it loaded before it
+      setCanvasReload((token) => token + 1)
     }
   }, [currentChain, timingEnabled, handleRunEvent])
 
