@@ -84,20 +84,42 @@ if _assets_dir.is_dir():
     )
 
 
+def _bundle_file(parts: list[str]) -> Path | None:
+    """match the request to real entries, so it never reaches a filesystem path."""
+    current = _frontend_dist
+
+    for part in parts:
+        try:
+            entry = next(
+                (child for child in current.iterdir() if child.name == part), None
+            )
+        except OSError:
+            return None
+
+        # a link can resolve outside the bundle and would be served dereferenced
+        if entry is None or entry.is_symlink():
+            return None
+
+        current = entry
+
+    return current if current.is_file() else None
+
+
 @frontend_router.get("/{full_path:path}", response_class=HTMLResponse)
 async def serve_frontend(full_path: str):
     if full_path.startswith("api/"):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
 
     if full_path:
-        # reject traversal before joining: resolve() + is_relative_to below is
-        # what really contains the path, this makes the intent literal
-        if ".." in Path(full_path).parts:
+        parts = full_path.split("/")
+
+        # probes get a plain 404, client-side routes need the SPA shell
+        if ".." in parts:
             return JSONResponse({"detail": "Not Found"}, status_code=404)
-        candidate = (_frontend_dist / full_path).resolve()
-        dist_root = _frontend_dist.resolve()
-        if candidate.is_file() and candidate.is_relative_to(dist_root):
-            return FileResponse(candidate)
+
+        bundle_file = _bundle_file(parts)
+        if bundle_file is not None:
+            return FileResponse(bundle_file)
 
     index = _frontend_dist / "index.html"
     # print(index)

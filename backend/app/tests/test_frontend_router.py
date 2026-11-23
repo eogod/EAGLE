@@ -29,6 +29,28 @@ async def test_frontend_router_serves_a_file_from_dist(dist: Path) -> None:
     assert Path(response.path) == dist / "app.js"
 
 
+async def test_frontend_router_serves_a_nested_file(dist: Path) -> None:
+    (dist / "assets").mkdir()
+    (dist / "assets" / "index.js").write_text("console.log(2)", encoding="utf-8")
+
+    response = await serve_frontend("assets/index.js")
+
+    assert response.status_code == 200
+    assert Path(response.path) == dist / "assets" / "index.js"
+
+
+async def test_frontend_router_ignores_a_symlink_out_of_dist(dist: Path) -> None:
+    """a link inside the bundle must not be followed outside it"""
+    secret = dist.parent / "secret"
+    secret.write_text("top secret", encoding="utf-8")
+    (dist / "linked.js").symlink_to(secret)
+
+    response = await serve_frontend("linked.js")
+
+    assert response.status_code == 200
+    assert response.body == b"<html>spa</html>"
+
+
 @pytest.mark.parametrize("full_path", ["../secret", "assets/../../secret"])
 async def test_frontend_router_rejects_traversal(dist: Path, full_path: str) -> None:
     """the file exists outside dist, but it must not be served"""
