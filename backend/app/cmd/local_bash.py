@@ -11,6 +11,7 @@ import re
 import signal
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 
 from app.core.config import get_settings
@@ -154,20 +155,30 @@ def _spawn(command: str, cwd: str, chain_id: int | None):
 async def _communicate(proc, timeout: int, chain_id: int | None):
     """wait with timeout; kill nothing beyond the group proc on timeout/cancel"""
     marker = ""
+    # one communicate task, awaited twice: calling proc.communicate() again
+    # after wait_for cancels the first call can leave the pipe tasks stuck
+    task = asyncio.ensure_future(proc.communicate())
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        return stdout, marker
-    except TimeoutError:
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if task in done:
+            stdout, _ = task.result()
+            return stdout, marker
+
         _kill_group(proc)
         try:
-            # reap group, partial output still comes back from the pipe
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        except Exception:
+            stdout, _ = await asyncio.wait_for(task, timeout=5)
+        except TimeoutError:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
             stdout = b""
         logger.info("bash killed by timeout: %s", proc.pid)
         return stdout, f"[TIMEOUT] killed after {timeout}s by process group, "
     except asyncio.CancelledError:
         _kill_group(proc)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
         raise
     finally:
         _untrack(proc.pid, chain_id)
