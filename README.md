@@ -6,11 +6,11 @@
 
 The Emulated Attack Generator with Layered Engine is an interactive system for building
 and executing realistic attack chains based on the [Unified Cyber Kill Chain](https://www.unifiedkillchain.com/) stages and supports the dynamic formation of attack chains in real
-time. It works in the context of an API that uses GraphQL and the Mythics library plus a minimal frontend.
+time. It talks to Mythic over GraphQL and ships with a minimal React frontend.
 
-The platform operates through a C2 infrastructure (Mythic C2 + agents, zero agent) and
-supports the generation of new agents during an attack, emulating Lateral movement and
-deep penetration into the infrastructure.
+The platform runs on a C2 infrastructure (Mythic C2 + agents, zero agent) and can generate
+new agents during an attack, emulating lateral movement and deeper access into the
+infrastructure.
 
 Commands that are executed locally are executed for the first stages of the chain only through zero agent.
 
@@ -114,7 +114,7 @@ poetry run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 By default, the application runs at **http://127.0.0.1:8000** and connects to `Mythic C2` on startup.
 All three front doors below drive the same chains.
 
-- **Web UI** - the React frontend at the root URL: chain building and execution (agent / local), LLM-assisted output analysis, the document-analysis agent panel.
+- **Web UI** - the React frontend at the root URL: chain building and execution (agent / local), LLM-assisted output analysis, the document-analysis agent panel. Agent edits and runs arrive as proposals and are applied or executed only after the operator approves them.
 - **MCP server** - a `/mcp` mount for MCP clients.
 - **Swagger / API** - `Swagger UI` at **/api/docs**.
 
@@ -128,7 +128,7 @@ Backend tests run on a throwaway SQLite database by default (`poetry run pytest`
 
 ## TODO
 
-Below are the larger pieces a full scenario run still needs. The smaller ones are marked with `# TODO` in the code.
+A full scenario run still needs these larger pieces. The smaller ones are marked with `# TODO` in the code.
 
 - **/import-chain** should read the same `JSON` / `YAML` that **/export-chain** writes and create planned steps. A separate run record would keep the plan apart from each execution, so a replay appends history instead of overwriting `AttackStep`.
 

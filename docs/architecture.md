@@ -2,8 +2,9 @@
 
 EAGLE is a FastAPI application with a small React frontend, PostgreSQL for the durable
 record, Valkey for hot task state, and Mythic C2 as the execution backend. Operator input
-and LLM suggestions become `AttackChain` rows, and those rows are replayed through Mythic
-agents or local bash.
+becomes `AttackChain` rows, and those rows are replayed through Mythic agents or local
+bash. LLM suggestions become `ChainProposal` rows and touch a chain only after the
+operator approves them.
 
 The runtime modules, how they connect, and the database model follow. Installation steps
 are in the [README](../README.md).
@@ -44,7 +45,7 @@ flowchart LR
         api_router["api_router.py<br/>mounts /api"]
         auth_api["auth.py + users.py *<br/>/auth, /users"]
         llm_api["llm.py *<br/>/llm"]
-        agent_api["agent_{sessions,chat,drafts}.py<br/>/agent"]
+        agent_api["agent_{sessions,chat,drafts,proposals}.py<br/>/agent"]
         export_api["kill_chain.py *<br/>/export-chain"]
         tasks_api["tasks.py<br/>/cmd"]
         mcp_api["tasks_mcp.py *<br/>/mcp"]
@@ -53,6 +54,9 @@ flowchart LR
     subgraph SVC["app/services"]
         llm_svc["llm_service.py<br/>LLMService, providers"]
         agent_svc["agent_chat/document/draft<br/>_service.py *"]
+        proposal_svc["chain_proposal_service.py *<br/>proposal, approve, apply"]
+        auth_svc["auth_sessions.py *<br/>auth_guard.py"]
+        step_svc["step_runner.py"]
         ttp_svc["ttp_info_service.py"]
         cve_svc["cve/<br/>service, nvd, cve, cpe<br/>cpe_rank, cpe_search, format"]
         chain_svc["chain_service.py *"]
@@ -71,6 +75,7 @@ flowchart LR
 
     subgraph AGENT["app/agent"]
         pipeline["pipeline.py"]
+        editplan["edit_plan.py"]
         prompts["prompts.py"]
         parsing["parsing.py"]
         validation["validation.py"]
@@ -107,6 +112,14 @@ flowchart LR
     llm_api --> agent_svc
     agent_api --> agent_svc
     agent_api --> pipeline
+    agent_api --> proposal_svc
+    auth_api --> auth_svc
+    agent_api --> auth_svc
+    tasks_api --> auth_svc
+    proposal_svc --> step_svc
+    proposal_svc --> editplan
+    step_svc --> bash_svc
+    step_svc --> c2_svc
     tasks_api & mcp_api -->|commands / tools| exec_svc
     tasks_api & mcp_api --> chain_svc
     tasks_api --> events
@@ -163,10 +176,23 @@ summaries). `c2_service.analyze_step` and `chain_exec_service` call
 `analyze_command_output_with_llm`; chain_exec owns the decision to analyze
 custom-step output.
 
-Agent state is split across three services: `AgentChatService` (sessions, messages, runs,
-LLM facade), `AgentDocumentService` (untrusted uploads and parsing), and
-`AgentDraftService` (drafts, validation, chain import and edit operations). Shared
-ownership checks live in `app/services/agent_scope.py`.
+Agent state is split across four services: `AgentChatService` (sessions, messages, runs,
+LLM facade), `AgentDocumentService` (untrusted uploads and parsing), `AgentDraftService`
+(drafts, validation, chain import), and `ChainProposalService` (the review gate for edit
+and run proposals). Shared ownership checks live in `app/services/agent_scope.py`.
+
+The agent pipeline never writes a chain. `pipeline.edit_chain` sends the model output to
+`ChainProposalService`, which validates it in `app/agent/edit_plan.py`, hashes the chain
+state, and stores the operations as a proposal. `approve` rechecks that hash, and
+`apply` or `execute` runs only after approval. An approved run goes through
+`app/services/step_runner.py`, which calls the same bash and C2 services as a manual run.
+Every transition adds an `ChainAuditEvent` row.
+
+Access tokens are tied to an `AuthSession` row by the `sid` claim.
+`deps.get_current_user` checks that row on every request, so logout, a password reset or
+a refresh-token replay kills a live access token immediately instead of waiting for the
+JWT to expire. `app/services/auth_guard.py` repeats the check on open SSE/WS streams,
+which outlive the request that opened them.
 
 In plan/build the pipeline runs a bounded research stage between extraction and the
 draft (`app/agent/research.py` → `tool_loop.py` → `tools.py`): the model may call
@@ -212,12 +238,21 @@ PostgreSQL is the durable store. Every model inherits `create_time` and `update_
 %%{init: {"er": {"diagramPadding": 10, "minEntityWidth": 55, "minEntityHeight": 24, "entityPadding": 8}}}%%
 erDiagram
     USER_ACCOUNT ||--o{ REFRESH_TOKEN : ""
+    USER_ACCOUNT ||--o{ AUTH_SESSION : ""
+    AUTH_SESSION ||--o{ REFRESH_TOKEN : ""
     USER_ACCOUNT ||--o{ ATTACK_CHAIN : ""
     USER_ACCOUNT ||--o{ AGENT_SESSION : ""
     USER_ACCOUNT ||--o{ CHAIN_DRAFT : ""
+    USER_ACCOUNT ||--o{ CHAIN_PROPOSAL : ""
     ATTACK_CHAIN ||--o{ ATTACK_STEP : ""
     ATTACK_CHAIN ||--|| CURRENT_ATTACK_PHASE : ""
+    ATTACK_CHAIN ||--o{ CHAIN_PROPOSAL : ""
+    ATTACK_CHAIN ||--o{ CHAIN_AUDIT_EVENT : ""
+    ATTACK_STEP ||--o{ CHAIN_AUDIT_EVENT : ""
     AGENT_SESSION }o--o| ATTACK_CHAIN : ""
+    AGENT_SESSION ||--o{ CHAIN_PROPOSAL : ""
+    CHAIN_PROPOSAL ||--o{ CHAIN_AUDIT_EVENT : ""
+    AGENT_RUN |o--o{ CHAIN_PROPOSAL : ""
     ATTACK_STEP ||--o{ AGENT : ""
     ATTACK_STEP ||--o{ MYTHIC_TASK : ""
     ATTACK_STEP ||--o{ BASH_TASK : ""
@@ -238,9 +273,18 @@ erDiagram
             string role
         }
 
+        AUTH_SESSION {
+            bigint id PK
+            uuid user_id FK
+            bigint expires_at
+            bigint revoked_at
+        }
+
         REFRESH_TOKEN {
             bigint id PK
             bigint user_id FK
+            bigint session_id FK
+            string token_hash UK
         }
     end
 
@@ -328,9 +372,30 @@ erDiagram
             uuid user_id FK
             string status
         }
+
+        CHAIN_PROPOSAL {
+            bigint id PK
+            string public_id UK
+            string kind
+            string status
+            bigint chain_id FK
+            string base_fingerprint
+        }
+
+        CHAIN_AUDIT_EVENT {
+            bigint id PK
+            bigint proposal_id FK
+            bigint step_id FK
+            string action
+        }
     end
 ```
 
 `CURRENT_ATTACK_PHASE` is one row per chain, `AGENT_FINDING` keeps `session_id` alongside
 `run_id` for cheap session cleanup, and `CHAIN_DRAFT` stays JSONB until the operator
 imports it into typed `ATTACK_STEP` rows.
+
+`AUTH_SESSION` is one row per login and owns its refresh tokens. Only the SHA-256 hash
+of a refresh token is stored. `CHAIN_PROPOSAL` keeps the validated operations and the
+chain fingerprint they were built against; the operations are immutable after creation.
+`CHAIN_AUDIT_EVENT` is append-only and records every proposal transition.
