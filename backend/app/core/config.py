@@ -56,8 +56,13 @@ AGENT_WORKSPACE_DIR = PROJECT_DIR / "data" / "agent"
 class Security(BaseModel):
     jwt_issuer: str = "my-app"
     jwt_secret_key: SecretStr = SecretStr("sk-change-me")
-    jwt_access_token_expire_secs: int = 24 * 3600  # 1d
+    # short access plus server-side session check gives immediate revocation
+    jwt_access_token_expire_secs: int = 15 * 60
     refresh_token_expire_secs: int = 28 * 24 * 3600  # 28d
+    # two tabs may race one rotation; short reuse is treated as a retry
+    refresh_rotation_grace_secs: int = 30
+    # open SSE/WS connections re-check the session on this cadence
+    stream_auth_recheck_secs: int = 5
     password_bcrypt_rounds: int = 12
     allowed_hosts: list[str] = ["localhost", "127.0.0.1"]
     backend_cors_origins: list[AnyHttpUrl] = []

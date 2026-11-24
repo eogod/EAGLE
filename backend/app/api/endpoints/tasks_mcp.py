@@ -22,7 +22,8 @@ from app.cmd.mythic_events import MythicEventsService
 from app.core import database_session
 from app.core.security.jwt import create_jwt_token, verify_jwt_token
 from app.core.security.password import verify_password
-from app.models import User
+from app.models import AuthSession, User
+from app.services.auth_sessions import session_expiry
 from app.services.bash_service import BashCommandService
 from app.services.c2_service import CommandsC2ExecService
 from app.services.chain_exec_service import ChainExecutionService
@@ -93,7 +94,16 @@ async def _ensure_auth() -> None:
                 raise RuntimeError(f"No user found for email {email}")
             if not verify_password(password, user.hashed_password):
                 raise RuntimeError("EAGLE_LLM_AGENT_PASSWORD is incorrect")
-            jwt_token = create_jwt_token(user_id=user.user_id)
+            auth_session = AuthSession(
+                user_id=user.user_id,
+                expires_at=session_expiry(),
+                created_at=int(time.time()),
+            )
+            session.add(auth_session)
+            await session.commit()
+            jwt_token = create_jwt_token(
+                user_id=user.user_id, session_id=auth_session.id
+            )
             _auth.token = jwt_token.access_token
             _auth.exp = jwt_token.payload.exp
 
@@ -365,9 +375,10 @@ async def run_chain(
 @mcp.tool()
 async def cancel_chain(chain_id: int, chain_name: str) -> dict[str, str]:
     """Cancel a running attack chain execution. Requires the chain_id and chain_name for verification."""
+    ctx = await _get_ctx()
     async with database_session.get_async_session() as session:
         svc = ChainService(session)
-        verified = await svc.verify_chain_name(chain_id, chain_name)
+        verified = await svc.verify_chain_name(chain_id, chain_name, ctx.user)
     if not verified:
         return {"status": "error", "detail": "chain_name does not match chain_id"}
     return {"status": "canceled", "chain_name": chain_name}

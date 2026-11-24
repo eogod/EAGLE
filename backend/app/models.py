@@ -19,6 +19,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -26,7 +27,9 @@ from sqlalchemy import (
     String,
     Text,
     Uuid,
+    false,
     func,
+    true,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -60,23 +63,63 @@ class User(Base):
         String(256), nullable=False, unique=True, index=True
     )
     hashed_password: Mapped[str] = mapped_column(String(128), nullable=False)
-    refresh_tokens: Mapped[list[RefreshToken]] = relationship(back_populates="user")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=true()
+    )
+    refresh_tokens: Mapped[list[RefreshToken]] = relationship(
+        back_populates="user", passive_deletes=True
+    )
+    auth_sessions: Mapped[list[AuthSession]] = relationship(
+        back_populates="user", passive_deletes=True
+    )
     attack_chain: Mapped[list[AttackChain]] = relationship(back_populates="user")
+
+
+class AuthSession(Base):
+    """one login; access tokens carry its id, so revoke is immediate"""
+
+    __tablename__ = "auth_session"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_account.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # epoch seconds keep sqlite and postgres comparisons identical
+    expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    revoked_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_used_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="auth_sessions")
+    refresh_tokens: Mapped[list[RefreshToken]] = relationship(
+        back_populates="session", passive_deletes=True
+    )
 
 
 class RefreshToken(Base):
     __tablename__ = "refresh_token"
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True)
-    refresh_token: Mapped[str] = mapped_column(
-        String(512), nullable=False, unique=True, index=True
+    # only the hash is stored; a database read must not hand over a session
+    token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
     )
-    used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    used_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     exp: Mapped[int] = mapped_column(BigInteger, nullable=False)
     user_id: Mapped[str] = mapped_column(
         ForeignKey("user_account.user_id", ondelete="CASCADE"),
     )
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("auth_session.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     user: Mapped[User] = relationship(back_populates="refresh_tokens")
+    session: Mapped[AuthSession] = relationship(back_populates="refresh_tokens")
 
 
 class AttackChain(Base):
@@ -104,6 +147,13 @@ class AttackChain(Base):
 
 class AttackStep(Base):
     __tablename__ = "attack_step"
+    __table_args__ = (
+        # a draft must never carry an execution ticket
+        CheckConstraint(
+            "NOT (is_draft AND (mythic_task_id <> 0 OR mythic_payload_id <> 0))",
+            name="ck_attack_step_draft_execution",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     # TODO: add an explicit order column; imported steps cannot rely on insertion id.
@@ -142,6 +192,10 @@ class AttackStep(Base):
         Boolean, nullable=False, server_default="true"
     )
     status: Mapped[str] = mapped_column(String(64), nullable=False, unique=False)
+    # operator-authored step; draft routes can only touch rows with this flag
+    is_draft: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false()
+    )
     executed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -413,3 +467,82 @@ class ChainDraft(Base):
     payload: Mapped[dict] = mapped_column(JSONValue, nullable=False, default=dict)
 
     session: Mapped[AgentSession] = relationship(back_populates="drafts")
+
+
+class ChainProposal(Base):
+    """server-side review gate: model output becomes a row, never an applied edit"""
+
+    __tablename__ = "chain_proposal"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="proposed", index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_account.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_session.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chain_id: Mapped[int] = mapped_column(
+        ForeignKey("attack_chain.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_run.id", ondelete="SET NULL"), nullable=True
+    )
+    base_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    # immutable after creation; apply never accepts operations from a client
+    ops: Mapped[list] = mapped_column(JSONValue, nullable=False, default=list)
+    validation: Mapped[dict] = mapped_column(JSONValue, nullable=False, default=dict)
+    summary: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    provider: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    model: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    approved_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    applied_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    rejected_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    executed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    finished_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    danger_ack_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True
+    )
+    result: Mapped[list | None] = mapped_column(JSONValue, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ChainAuditEvent(Base):
+    """append-only trail of who proposed, approved, applied or ran what"""
+
+    __tablename__ = "chain_audit_event"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    chain_id: Mapped[int | None] = mapped_column(
+        ForeignKey("attack_chain.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_session.id", ondelete="SET NULL"), nullable=True
+    )
+    proposal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chain_proposal.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    step_id: Mapped[int | None] = mapped_column(
+        ForeignKey("attack_step.id", ondelete="SET NULL"), nullable=True
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_account.user_id", ondelete="SET NULL"), nullable=True
+    )
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False, default="ok")
+    detail: Mapped[dict] = mapped_column(JSONValue, nullable=False, default=dict)

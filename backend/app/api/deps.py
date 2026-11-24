@@ -6,6 +6,7 @@ like all authenticated endpoints need user session & id
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
@@ -20,14 +21,15 @@ from app.models import User
 from app.services.agent_chat_service import AgentChatService
 from app.services.agent_document_service import AgentDocumentService
 from app.services.agent_draft_service import AgentDraftService
+from app.services.auth_sessions import active_session
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/access-token", auto_error=False)
 
 # cookies hold the same JWT as the header
 ACCESS_COOKIE = "eagle_at"
 REFRESH_COOKIE = "eagle_rt"
-# route-scoped, never rides an ordinary api call
-REFRESH_COOKIE_PATH = "/api/auth/refresh-token"
+# scoped to auth routes so refresh and logout both see it
+REFRESH_COOKIE_PATH = "/api/auth"
 
 
 class ChainController:
@@ -93,7 +95,9 @@ async def get_current_user(
         )
     token_payload = verify_jwt_token(token)
 
-    query = select(User).where(User.user_id == token_payload.sub)
+    query = select(User).where(
+        User.user_id == token_payload.sub, User.is_active.is_(True)
+    )
     user = await session.scalar(query)
 
     if user is None:
@@ -101,7 +105,31 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=api_messages.JWT_ERROR_USER_REMOVED,
         )
+
+    # a revoked session must 401 on the next request, not after the jwt expires
+    auth_session = await active_session(session, token_payload.sid, token_payload.sub)
+    if auth_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=api_messages.JWT_ERROR_USER_REMOVED,
+        )
+
+    request.state.auth_session_id = auth_session.id
+    request.state.auth_user_id = user.user_id
     return user
+
+
+@dataclass(frozen=True)
+class AuthContext:
+    session_id: int
+    user_id: str
+
+
+def get_auth_context(request: Request) -> AuthContext:
+    return AuthContext(
+        session_id=request.state.auth_session_id,
+        user_id=request.state.auth_user_id,
+    )
 
 
 def get_mythic_client(request: Request):
