@@ -8,11 +8,13 @@ import {
 } from '@phosphor-icons/react'
 import { toast } from 'react-toastify'
 import { agentApi } from '../../entities/agentApi'
+import { ProposalCard } from './ProposalCard'
 import { useAgentSession, useAgentThread } from './useAgentThread'
 
 const TOOL_LABELS = {
   extract_document: 'Reading report',
   propose_chain_draft: 'Drafting attack chain',
+  edit_chain: 'Proposing changes',
   websearch: 'Searching the web',
   webfetch: 'Reading page',
   get_cve_info: 'Looking up CVE',
@@ -41,11 +43,12 @@ const researchDetail = (part) => {
   return target
 }
 
-const MODES = ['ask', 'plan', 'edit']
+const MODES = ['ask', 'plan', 'edit', 'execute']
 const MODE_HINTS = {
   ask: 'Ask about the chain or report',
   plan: 'Describe the chain to plan',
-  edit: 'Tell the agent what to change or run',
+  edit: 'Describe the change you want proposed',
+  execute: 'Pick the existing steps to run, with confirmation',
 }
 
 const PROVIDER_KEY = 'eagle_agent_provider'
@@ -153,13 +156,14 @@ const AgentChat = ({ sessionId, chainName, onImportDraft, onChainChanged }) => {
   const {
     runtime,
     draft,
-    draftSource,
     error,
     document,
     uploading,
     upload,
     detach,
     markDraftImported,
+    pendingProposals,
+    refreshProposals,
   } = useAgentThread({
     sessionId,
     provider,
@@ -235,17 +239,11 @@ const AgentChat = ({ sessionId, chainName, onImportDraft, onChainChanged }) => {
     importDraftById(draft.draft_id ?? draft.id)
   }
 
-  // any proposal run saves itself, so the canvas always reflects one chain
-  const autoImportedRef = useRef(null)
-  useEffect(() => {
-    if (mode === 'ask' || draftSource !== 'stream') return
-    if (!draft?.draft_id || !['needs_review', 'plan'].includes(draft.status)) return
-    if (!draft.steps?.length) return
-    if (autoImportedRef.current === draft.draft_id) return
-
-    autoImportedRef.current = draft.draft_id
-    queueMicrotask(() => importDraftById(draft.draft_id))
-  }, [draft, draftSource, mode, importDraftById])
+  // an applied or executed proposal already wrote to the chain
+  const handleProposalChanged = useCallback(() => {
+    onChainChanged?.()
+    refreshProposals()
+  }, [onChainChanged, refreshProposals])
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -267,7 +265,13 @@ const AgentChat = ({ sessionId, chainName, onImportDraft, onChainChanged }) => {
               <EmptyState />
             </ThreadPrimitive.Empty>
             <ThreadPrimitive.Messages>
-              {({ message }) => <AgentMessage message={message} />}
+              {({ message }) => (
+                <AgentMessage
+                  message={message}
+                  sessionId={sessionId}
+                  onProposalChanged={handleProposalChanged}
+                />
+              )}
             </ThreadPrimitive.Messages>
           </ThreadPrimitive.Viewport>
 
@@ -307,6 +311,30 @@ const AgentChat = ({ sessionId, chainName, onImportDraft, onChainChanged }) => {
                 {draft.validation?.errors?.length > 0 && (
                   <div className="mt-2 text-[11px] text-danger">{draft.validation.errors[0]}</div>
                 )}
+              </div>
+            )}
+
+            {pendingProposals.length > 0 && (
+              <div className="mb-2 rounded-md border border-warning/40 bg-card px-2.5 py-2 text-[11px]">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-warning">
+                    {pendingProposals.length} proposal(s) awaiting review
+                  </span>
+                  <button
+                    type="button"
+                    onClick={refreshProposals}
+                    className="rounded px-1 text-muted transition-colors hover:bg-card-hover hover:text-primary"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <ul className="mt-1 space-y-0.5">
+                  {pendingProposals.map((proposal) => (
+                    <li key={proposal.public_id} className="truncate text-muted">
+                      {proposal.kind} · {proposal.status} · {proposal.summary || 'no summary'}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 
@@ -415,13 +443,14 @@ const EmptyState = () => (
   <div className="px-0.5 py-6 text-[12px] leading-relaxed text-muted">
     <p className="text-secondary">Attach a DFIR report, or just describe the chain you want.</p>
     <p className="mt-2">
-      Ask answers questions, Plan outlines stages and rationale, Build produces importable steps. A
-      finding only enters a draft when its quote is verbatim in the report.
+      Ask answers questions, Plan outlines stages and rationale, Edit proposes changes you approve
+      here, Execute proposes running existing steps. Nothing reaches the chain until you review it.
+      A finding only enters a draft when its quote is verbatim in the report.
     </p>
   </div>
 )
 
-const AgentMessage = ({ message }) => {
+const AgentMessage = ({ message, sessionId, onProposalChanged }) => {
   const isUser = message.role === 'user'
   return (
     <div
@@ -439,6 +468,17 @@ const AgentMessage = ({ message }) => {
         }
         if (part.type === 'tool-call') {
           return <ToolCard key={part.toolCallId ?? index} part={part} />
+        }
+        // proposals arrive as data parts; see convertMessage in useAgentThread
+        if (part.type === 'data' && part.name === 'edit-proposal') {
+          return (
+            <ProposalCard
+              key={part.data?.proposalId ?? index}
+              sessionId={sessionId}
+              part={part.data}
+              onChanged={onProposalChanged}
+            />
+          )
         }
         return null
       })}
@@ -471,6 +511,11 @@ const ToolCard = ({ part }) => {
       {part.toolName === 'propose_chain_draft' && result.steps != null && (
         <div className="mt-1 text-muted">
           {result.steps} step(s) · {result.status}
+        </div>
+      )}
+      {part.toolName === 'edit_chain' && result.status && (
+        <div className="mt-1 text-muted">
+          {result.operations_count ?? 0} operation(s) · {result.status}
         </div>
       )}
       {RESEARCH_TOOLS.includes(part.toolName) && (

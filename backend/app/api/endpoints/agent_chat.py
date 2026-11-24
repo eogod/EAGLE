@@ -8,16 +8,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.pipeline import (
     AnalysisRequest,
+    EditCall,
     RunCancelled,
     analyze,
     answer_question,
@@ -32,13 +32,13 @@ from app.core.config import (
     get_settings,
     phases,
 )
-from app.models import Agent, AttackStep, User
+from app.models import AgentRun, AgentSession, User
 from app.schemas.agent import AgentMessageIn
 from app.services.agent_chat_service import AgentChatService
 from app.services.agent_document_service import AgentDocumentService
-from app.services.agent_draft_service import AgentDraftService, EditError
-from app.services.bash_service import BashCommandService
-from app.services.c2_service import CommandsC2ExecService
+from app.services.agent_draft_service import AgentDraftService
+from app.services.auth_guard import StreamGuard, guarded_stream
+from app.services.chain_proposal_service import ChainProposalService, ProposalInput
 from app.services.llm_service import AgentLLMError, ChatStreamProvider
 from app.services.ttp_info_service import UKC_PHASE_DESCRIPTIONS
 
@@ -49,6 +49,7 @@ router = APIRouter()
 ChatDep = Annotated[AgentChatService, Depends(deps.get_agent_chat_service)]
 DocumentDep = Annotated[AgentDocumentService, Depends(deps.get_agent_document_service)]
 DraftDep = Annotated[AgentDraftService, Depends(deps.get_agent_draft_service)]
+ProposalDep = Annotated[ChainProposalService, Depends(deps.get_chain_proposal_service)]
 UserDep = Annotated[User, Depends(deps.get_current_user)]
 AgentRunControllerDep = Annotated[
     AgentRunController, Depends(deps.get_agent_run_controller)
@@ -116,6 +117,25 @@ def _apply_event(parts: list[dict[str, Any]], name: str, data: dict[str, Any]) -
                 part["isError"] = data.get("status") == "error"
                 return
 
+    if name == "edit.proposed":
+        proposal_id = str(data.get("public_id") or "")
+        if not proposal_id:
+            return
+        if any(
+            part.get("type") == "edit-proposal"
+            and part.get("proposalId") == proposal_id
+            for part in parts
+        ):
+            return
+        parts.append(
+            {
+                "type": "edit-proposal",
+                "proposalId": proposal_id,
+                "kind": data.get("kind") or "edit",
+                "status": data.get("status") or "proposed",
+            }
+        )
+
 
 async def _event_stream(
     queue: asyncio.Queue,
@@ -146,6 +166,87 @@ async def _event_stream(
                 logger.warning("agent run task failed after client disconnect")
 
 
+Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class ModeContext:
+    request: AnalysisRequest
+    payload: AgentMessageIn
+    session_row: AgentSession
+    user: User
+    chat: AgentChatService
+    drafts: AgentDraftService
+    proposals: ChainProposalService
+    emit: Emit
+    cancel_event: asyncio.Event
+    session_id: int
+    run: AgentRun
+
+
+async def _run_mode(ctx: ModeContext) -> str:
+    if ctx.payload.mode == "ask":
+        await answer_question(
+            ctx.request,
+            question=ctx.payload.content,
+            emit=ctx.emit,
+            cancel_event=ctx.cancel_event,
+        )
+        return "completed"
+
+    if ctx.payload.mode in ("edit", "execute"):
+        kind = "run" if ctx.payload.mode == "execute" else "edit"
+        await ctx.drafts.chain_for_edit(ctx.session_row, ctx.user)
+
+        async def propose(
+            operations: list[dict[str, Any]], summary: str
+        ) -> dict[str, Any]:
+            proposal = await ctx.proposals.propose(
+                ProposalInput(
+                    session_row=ctx.session_row,
+                    user=ctx.user,
+                    kind=kind,
+                    raw_ops=operations,
+                    summary=summary,
+                    run_id=ctx.run.id,
+                    provider=ctx.request.provider.name,
+                    model=ctx.request.provider.model,
+                )
+            )
+            return ctx.proposals.preview(proposal)
+
+        await edit_chain(
+            ctx.request,
+            EditCall(
+                instruction=ctx.payload.content,
+                propose_ops=propose,
+                kind=kind,
+                cancel_event=ctx.cancel_event,
+            ),
+            ctx.emit,
+        )
+        return "completed"
+
+    result = await analyze(
+        ctx.request,
+        emit=ctx.emit,
+        save_finding=ctx.chat.make_finding_saver(ctx.run),
+        cancel_event=ctx.cancel_event,
+    )
+    saved = await ctx.drafts.save_draft(
+        session_id=ctx.session_id,
+        run_id=ctx.run.id,
+        user=ctx.user,
+        payload=result.draft,
+        name=result.draft.get("name") or ctx.request.draft_name,
+    )
+    await ctx.emit(
+        "draft.ready",
+        {"draft": {**result.draft, "draft_id": saved.id}, "warnings": result.warnings},
+    )
+    return "completed"
+
+
 @router.post("/sessions/{session_id}/messages")
 async def post_message(  # noqa: PLR0913, PLR0917 - FastAPI dependency signature
     session_id: int,
@@ -154,6 +255,7 @@ async def post_message(  # noqa: PLR0913, PLR0917 - FastAPI dependency signature
     chat: ChatDep,
     documents: DocumentDep,
     drafts: DraftDep,
+    proposals: ProposalDep,
     provider: ProviderDep,
     http_request: Request,
     controller: AgentRunControllerDep,
@@ -198,51 +300,21 @@ async def post_message(  # noqa: PLR0913, PLR0917 - FastAPI dependency signature
                 chain_context=await drafts.chain_context(session_row, user),
                 research=get_settings().webtools.enabled,
             )
-            if payload.mode == "ask":
-                await answer_question(
-                    request,
-                    question=payload.content,
-                    emit=emit,
-                    cancel_event=cancel_event,
-                )
-                terminal = "completed"
-            elif payload.mode == "edit":
-                chain = await drafts.chain_for_edit(session_row, user)
-                run_step = _make_step_runner(chat.session, chain, user, http_request)
-                await edit_chain(
-                    request,
-                    instruction=payload.content,
-                    emit=emit,
-                    apply_ops=lambda ops: drafts.apply_edits(
-                        ops, chain, user, runner=run_step
-                    ),
-                    cancel_event=cancel_event,
-                )
-                terminal = "completed"
-            else:
-                result = await analyze(
-                    request,
-                    emit=emit,
-                    save_finding=chat.make_finding_saver(run),
-                    cancel_event=cancel_event,
-                )
-                saved = await drafts.save_draft(
-                    session_id=session_id,
-                    run_id=run.id,
+            terminal = await _run_mode(
+                ModeContext(
+                    request=request,
+                    payload=payload,
+                    session_row=session_row,
                     user=user,
-                    payload=result.draft,
-                    name=result.draft.get("name") or request.draft_name,
+                    chat=chat,
+                    drafts=drafts,
+                    proposals=proposals,
+                    emit=emit,
+                    cancel_event=cancel_event,
+                    session_id=session_id,
+                    run=run,
                 )
-                await queue.put(
-                    (
-                        "draft.ready",
-                        {
-                            "draft": {**result.draft, "draft_id": saved.id},
-                            "warnings": result.warnings,
-                        },
-                    )
-                )
-                terminal = "completed"
+            )
         except RunCancelled:
             terminal = "cancelled"
         except AgentLLMError as exc:
@@ -283,8 +355,24 @@ async def post_message(  # noqa: PLR0913, PLR0917 - FastAPI dependency signature
         0,
     )
 
+    inner = _event_stream(queue, task, started, run.id, controller)
+    revoked = _sse(
+        "auth.revoked",
+        {"run_id": run.id, "session_id": session_id},
+        0,
+    )
+    guarded = guarded_stream(
+        inner,
+        StreamGuard(
+            session_id=http_request.state.auth_session_id,
+            user_id=http_request.state.auth_user_id,
+            interval=get_settings().security.stream_auth_recheck_secs,
+            terminal=revoked,
+            on_revoke=lambda: controller.cancel(run.id),
+        ),
+    )
     return StreamingResponse(
-        _event_stream(queue, task, started, run.id, controller),
+        guarded,
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
@@ -356,50 +444,3 @@ async def _load_session_document(
         )
 
     return document, documents.load_pages(document)
-
-
-def _make_step_runner(session: AsyncSession, chain, user: User, http_request: Request):
-    """executor handed to edit mode: runs the one step the operator clicked."""
-
-    async def run_step(step: AttackStep) -> dict[str, Any]:
-        events = getattr(http_request.app.state, "events_service", None)
-        mythic = getattr(http_request.app.state, "mythic_client", None)
-        if step.step_type == "bash":
-            if events is None:
-                raise EditError("bash executor is not running")
-            data = await BashCommandService(session, events).start(
-                step.command,
-                chain.chain_name,
-                user,
-                timeout=get_settings().local_bash.timeout,
-            )
-            return {
-                "status": data["status"],
-                "new_step_id": data["step_id"],
-            }
-        if mythic is None:
-            raise EditError("Mythic is not connected")
-        c_agent = await session.scalar(select(Agent).where(Agent.step_id == step.id))
-        display_id = c_agent.callback_display_id if c_agent else 0
-        c2 = CommandsC2ExecService(session, mythic)
-        if step.step_type == "agent":
-            data = await c2.run_agent_command(
-                step.command,
-                display_id,
-                step.tool_name,
-                chain.id,
-                step.phase,
-                user,
-            )
-        else:
-            data = await c2.run_local_command(
-                step.command,
-                display_id,
-                chain.id,
-                step.phase,
-                user,
-            )
-
-        return {"status": data["status"], "new_step_id": data["step_id"]}
-
-    return run_step

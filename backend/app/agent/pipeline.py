@@ -26,6 +26,15 @@ from app.services.llm_service import ChatStreamProvider
 
 Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
 SaveFinding = Callable[[dict[str, Any]], Awaitable[int]]
+ProposeOps = Callable[[list[dict[str, Any]], str], Awaitable[dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class EditCall:
+    instruction: str
+    propose_ops: ProposeOps
+    kind: str = "edit"
+    cancel_event: asyncio.Event | None = None
 
 
 @dataclass
@@ -318,19 +327,15 @@ async def answer_question(
     return "".join(chunks)
 
 
-async def edit_chain(
-    request: AnalysisRequest,
-    *,
-    instruction: str,
-    emit: Emit,
-    apply_ops: Callable[[list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]],
-    cancel_event: asyncio.Event | None = None,
-) -> str:
-    """ask the model for chain operations, then apply them through the service."""
+async def edit_chain(request: AnalysisRequest, call: EditCall, emit: Emit) -> str:
+    """ask the model for a plan; the service stores it and nothing runs"""
+    system_prompt = (
+        prompt_text.RUN_SYSTEM if call.kind == "run" else prompt_text.EDIT_SYSTEM
+    )
     messages = [
         {
             "role": "system",
-            "content": Template(prompt_text.EDIT_SYSTEM).substitute(
+            "content": Template(system_prompt).substitute(
                 phases=request.phase_hints or "\n".join(request.phase_names)
             ),
         },
@@ -338,7 +343,7 @@ async def edit_chain(
             "role": "user",
             "content": Template(prompt_text.EDIT_USER).substitute(
                 chain_block=request.chain_context or "empty chain",
-                instruction=instruction,
+                instruction=call.instruction,
             ),
         },
     ]
@@ -349,7 +354,7 @@ async def edit_chain(
         {
             "toolCallId": tool_id,
             "toolName": "edit_chain",
-            "args": {"instruction": instruction[:200]},
+            "args": {"instruction": call.instruction[:200], "kind": call.kind},
         },
     )
 
@@ -361,16 +366,31 @@ async def edit_chain(
         )
         raw_ops = parsed.get("operations")
         if isinstance(raw_ops, list):
-            operations = [op for op in raw_ops if isinstance(op, dict)][:10]
+            operations = [op for op in raw_ops if isinstance(op, dict)]
         summary = str(parsed.get("summary") or "").strip()
+    except Exception:
+        summary = "Could not read the proposed plan."
+
+    _check(call.cancel_event)
+    try:
+        proposal = await call.propose_ops(operations, summary)
     except Exception as exc:
-        summary = f"Could not read the edit plan: {exc}"
+        await emit(
+            "tool.completed",
+            {
+                "toolCallId": tool_id,
+                "toolName": "edit_chain",
+                "status": "error",
+                "result": {"proposal_id": None, "status": "failed"},
+            },
+        )
+        text = f"Could not create a proposal: {type(exc).__name__}"
+        await emit("assistant.delta", {"text": text})
+        return text
 
-    _check(cancel_event)
-    results = await apply_ops(operations)
-
-    applied = [r for r in results if r.get("status") == "ok"]
-    errors = [r for r in results if r.get("status") != "ok"]
+    validation = proposal.get("validation") or {}
+    errors = validation.get("errors") or []
+    status_value = proposal.get("status") or "proposed"
     await emit(
         "tool.completed",
         {
@@ -378,26 +398,23 @@ async def edit_chain(
             "toolName": "edit_chain",
             "status": "error" if errors else "complete",
             "result": {
-                "applied": len(applied),
+                "proposal_id": proposal.get("public_id"),
+                "status": status_value,
+                "operations_count": len(proposal.get("operations") or []),
                 "errors": len(errors),
-                "operations": results,
             },
         },
     )
+    await emit("edit.proposed", proposal)
 
-    lines = [f"Applied {len(applied)} of {len(results)} operation(s)."]
+    lines = [
+        "Proposed changes; review and approve them in the card before anything runs."
+    ]
     if summary:
         lines.insert(0, summary)
-    for result in results:
-        label = result.get("op", "op")
-        if result.get("status") == "ok":
-            extra = result.get("step_id") or result.get("new_step_id") or ""
-            lines.append(f"- {label} {extra}".rstrip())
-        else:
-            lines.append(f"- {label} failed: {result.get('detail', 'unknown error')}")
-
+    if errors:
+        lines.append(f"- {len(errors)} validation error(s)")
     text = "\n".join(lines)
-    await emit("edit.applied", {"results": results})
     await emit("assistant.delta", {"text": text})
     return text
 

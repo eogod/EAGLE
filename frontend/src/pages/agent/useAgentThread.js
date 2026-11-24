@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useExternalStoreRuntime } from '@assistant-ui/react'
 import { agentApi } from '../../entities/agentApi'
+import { mergeProposals, reduceParts } from './agentParts'
 
 // stored drafts keep the chain payload nested; SSE drafts are already flat
 const normalizeDraft = (stored) =>
@@ -18,56 +19,15 @@ const toUiMessage = (message) => ({
   content: message.content,
 })
 
-function appendText(parts, text) {
-  if (!text) return parts
-  if (parts.length && parts[parts.length - 1].type === 'text') {
-    const next = [...parts]
-    next[next.length - 1] = {
-      ...next[next.length - 1],
-      text: `${next[next.length - 1].text}${text}`,
-    }
-    return next
+const fetchPendingProposals = async (sessionId) => {
+  try {
+    const body = await agentApi.listProposals(sessionId)
+    // the list endpoint answers with a bare array or a named collection
+    return Array.isArray(body) ? body : (body?.proposals ?? [])
+  } catch {
+    // a missing endpoint only costs the fallback cards, not the conversation
+    return []
   }
-  return [...parts, { type: 'text', text }]
-}
-
-/** reduce one SSE event into assistant-ui content parts (mirrors the backend reducer) */
-export function reduceParts(parts, event) {
-  const payload = event.data || {}
-
-  if (event.event === 'assistant.delta') {
-    return appendText(parts, payload.text || '')
-  }
-  if (event.event === 'tool.started') {
-    const args = payload.args || {}
-    return [
-      ...parts,
-      {
-        type: 'tool-call',
-        toolCallId: String(payload.toolCallId || ''),
-        toolName: String(payload.toolName || ''),
-        args,
-        argsText: JSON.stringify(args),
-        isPreliminary: true,
-      },
-    ]
-  }
-  if (event.event === 'tool.completed') {
-    return parts.map((part) => {
-      if (part.type !== 'tool-call' || part.toolCallId !== String(payload.toolCallId)) {
-        return part
-      }
-      const { isPreliminary: _preliminary, ...rest } = part
-      return { ...rest, result: payload.result, isError: payload.status === 'error' }
-    })
-  }
-  if (event.event === 'run.error') {
-    return appendText(parts, `\n\n${payload.message || 'analysis failed'}`)
-  }
-  if (event.event === 'run.cancelled') {
-    return appendText(parts, '\n\nRun cancelled.')
-  }
-  return parts
 }
 
 function applyEvent(messages, assistantId, event) {
@@ -124,7 +84,7 @@ export const useAgentThread = ({
   const [messages, setMessages] = useState([])
   const [isRunning, setIsRunning] = useState(false)
   const [draft, setDraft] = useState(null)
-  const [draftSource, setDraftSource] = useState('none')
+  const [pendingProposals, setPendingProposals] = useState([])
   const [error, setError] = useState(null)
   const [document, setDocument] = useState(null)
   const [uploading, setUploading] = useState(false)
@@ -138,9 +98,10 @@ export const useAgentThread = ({
 
     try {
       const session = await agentApi.getSession(sessionId)
-      setMessages((session.messages || []).map(toUiMessage))
+      const pending = await fetchPendingProposals(sessionId)
+      setMessages(mergeProposals((session.messages || []).map(toUiMessage), pending))
+      setPendingProposals(pending)
       setDraft(normalizeDraft(session.draft))
-      setDraftSource(session.draft ? 'stored' : 'none')
 
       const latest = (session.documents || []).at(-1)
       if (latest && !documentRef.current) {
@@ -150,6 +111,14 @@ export const useAgentThread = ({
     } catch (err) {
       setError(err.message)
     }
+  }, [sessionId])
+
+  const refreshProposals = useCallback(async () => {
+    if (!sessionId) return
+
+    const pending = await fetchPendingProposals(sessionId)
+    setPendingProposals(pending)
+    setMessages((prev) => mergeProposals(prev, pending))
   }, [sessionId])
 
   useEffect(() => {
@@ -215,10 +184,10 @@ export const useAgentThread = ({
 
           if (event.event === 'run.started') runIdRef.current = event.data.run_id
           if (event.event === 'run.error') setError(event.data.message || 'analysis failed')
+          // edit.applied no longer streams; kept so an older backend still reloads
           if (event.event === 'edit.applied') onChainChanged?.()
           if (event.event === 'draft.ready') {
             setDraft(normalizeDraft(event.data.draft))
-            setDraftSource('stream')
             onDraftReady?.(event.data.draft)
           }
           if (['run.completed', 'run.failed', 'run.cancelled'].includes(event.event)) break
@@ -268,10 +237,13 @@ export const useAgentThread = ({
   const runtime = useExternalStoreRuntime({
     messages,
     isRunning,
+    // the runtime only accepts known part types, so proposals travel as data parts
     convertMessage: (message) => ({
       id: message.id,
       role: message.role,
-      content: message.content,
+      content: (message.content || []).map((part) =>
+        part.type === 'edit-proposal' ? { type: 'data', name: 'edit-proposal', data: part } : part,
+      ),
     }),
     onNew,
     onCancel,
@@ -280,13 +252,14 @@ export const useAgentThread = ({
   return {
     runtime,
     draft,
-    draftSource,
     error,
     document,
     uploading,
     upload,
     detach,
     markDraftImported,
+    pendingProposals,
+    refreshProposals,
     isRunning,
     clearError: () => setError(null),
   }

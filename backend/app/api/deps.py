@@ -22,6 +22,7 @@ from app.services.agent_chat_service import AgentChatService
 from app.services.agent_document_service import AgentDocumentService
 from app.services.agent_draft_service import AgentDraftService
 from app.services.auth_sessions import active_session
+from app.services.chain_proposal_service import ChainProposalService
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/access-token", auto_error=False)
 
@@ -187,3 +188,9 @@ async def get_agent_draft_service(
 ) -> AgentDraftService:
     """inject AgentDraftService bound to a fresh request session"""
     return AgentDraftService(session)
+
+
+async def get_chain_proposal_service(
+    session: AsyncSession = Depends(get_session),
+) -> ChainProposalService:
+    return ChainProposalService(session)

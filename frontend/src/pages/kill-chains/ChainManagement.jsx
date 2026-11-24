@@ -92,8 +92,8 @@ const ChainManagementView = () => {
     [panelWidth],
   )
 
-  // imported proposals are already persisted, so the canvas just refetches
-  const handleImportDraft = useCallback(() => {
+  // proposals and imports are already persisted, so the canvas just refetches
+  const reloadCanvas = useCallback(() => {
     setCanvasReload((value) => value + 1)
   }, [])
 
@@ -261,8 +261,8 @@ const ChainManagementView = () => {
             chainName={currentChain.chain_name}
             collapsed={panelCollapsed}
             onToggleCollapse={togglePanel}
-            onImportDraft={handleImportDraft}
-            onChainChanged={handleImportDraft}
+            onImportDraft={reloadCanvas}
+            onChainChanged={reloadCanvas}
             timingEnabled={timingEnabled}
             onToggleTiming={toggleTiming}
             plannedMinutes={Math.round(timingSummary.plannedSecs / 60)}

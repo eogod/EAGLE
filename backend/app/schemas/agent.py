@@ -22,7 +22,7 @@ class AgentMessageIn(BaseModel):
     document_id: int | None = None
     provider: str | None = None
     model: str | None = None
-    mode: Literal["ask", "plan", "edit"] = "plan"
+    mode: Literal["ask", "plan", "edit", "execute"] = "plan"
 
 
 class AgentMessageOut(BaseModel):
@@ -90,3 +90,43 @@ class DraftImportResponse(BaseModel):
     steps: list[dict[str, Any]]
     validation: dict[str, Any]
     replaced: int = 0
+
+
+class ProposalApproveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    acknowledge_dangerous: bool = False
+
+
+class ProposalApplyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    acknowledge_dangerous: bool = False
+
+
+class ProposalRejectIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=500)
+
+
+class ProposalExecuteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    acknowledge_dangerous: bool = False
+
+
+class AgentProposalOut(BaseModel):
+    public_id: str
+    kind: str
+    status: str
+    summary: str
+    operations: list[dict[str, Any]]
+    validation: dict[str, Any]
+    expires_at: int
+    base_fingerprint: str
+    result: list[dict[str, Any]] | None = None
+    error: str | None = None
+    can_approve: bool = False
+    can_apply: bool = False
+    can_execute: bool = False

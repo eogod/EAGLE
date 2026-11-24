@@ -25,6 +25,32 @@ export const agentApi = {
   importDraft: (draftId, chainName) =>
     data(api.post(`${BASE}/drafts/${draftId}/import`, { chain_name: chainName })),
 
+  // proposals are reviewed by public_id only; operations never travel back
+  listProposals: (sessionId, status = 'proposed,approved') =>
+    data(api.get(`${BASE}/sessions/${sessionId}/proposals`, { params: { status } })),
+  getProposal: (sessionId, publicId) =>
+    data(api.get(`${BASE}/sessions/${sessionId}/proposals/${publicId}`)),
+  approveProposal: (sessionId, publicId, acknowledgeDangerous) =>
+    data(
+      api.post(`${BASE}/sessions/${sessionId}/proposals/${publicId}/approve`, {
+        acknowledge_dangerous: acknowledgeDangerous,
+      }),
+    ),
+  applyProposal: (sessionId, publicId, acknowledgeDangerous) =>
+    data(
+      api.post(`${BASE}/sessions/${sessionId}/proposals/${publicId}/apply`, {
+        acknowledge_dangerous: acknowledgeDangerous,
+      }),
+    ),
+  rejectProposal: (sessionId, publicId, reason) =>
+    data(api.post(`${BASE}/sessions/${sessionId}/proposals/${publicId}/reject`, { reason })),
+  executeProposal: (sessionId, publicId, acknowledgeDangerous) =>
+    data(
+      api.post(`${BASE}/sessions/${sessionId}/proposals/${publicId}/execute`, {
+        acknowledge_dangerous: acknowledgeDangerous,
+      }),
+    ),
+
   async *streamMessage(sessionId, body, signal) {
     const response = await fetch(`${FETCH_BASE}/sessions/${sessionId}/messages`, {
       method: 'POST',

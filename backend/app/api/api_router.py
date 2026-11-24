@@ -10,6 +10,7 @@ from app.api import api_messages, deps
 from app.api.endpoints import (
     agent_chat,
     agent_drafts,
+    agent_proposals,
     agent_sessions,
     auth,
     kill_chain,
@@ -59,7 +60,12 @@ api_router.include_router(
 api_router.include_router(
     kill_chain.router, prefix="/export-chain", tags=["kill-chain"]
 )
-for _agent_router in (agent_sessions.router, agent_chat.router, agent_drafts.router):
+for _agent_router in (
+    agent_sessions.router,
+    agent_chat.router,
+    agent_drafts.router,
+    agent_proposals.router,
+):
     api_router.include_router(
         _agent_router,
         prefix="/agent",
