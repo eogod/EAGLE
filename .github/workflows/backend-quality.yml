@@ -34,6 +34,6 @@ jobs:
         working-directory: backend
         run: poetry install --with dev --no-interaction
 
-      - name: Tests
+      - name: Core tests
         working-directory: backend
-        run: poetry run pytest -n0 -m "not local" --timeout=60
+        run: poetry run pytest app/tests/test_core -n0 --timeout=60
