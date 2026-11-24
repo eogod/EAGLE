@@ -44,6 +44,7 @@ dev = [
     "pytest>=9.1.1,<10.0.0",
     "pytest-asyncio>=1.4.0,<2.0.0",
     "pytest-cov>=7.1.0,<8.0.0",
+    "pytest-timeout>=2.4.0,<3.0.0",
     "pytest-xdist>=3.8.0,<4.0.0",
     "ruff>=0.17.2,<0.18.0",
     "uvicorn[standard]>=0.54.0,<0.55.0",
@@ -64,6 +65,7 @@ addopts = "-vv -n auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_mode = "auto"
 testpaths = ["app/tests"]
+markers = ["local: needs the target host, not run in ci"]
 
 [tool.coverage.run]
 concurrency = ["greenlet"]

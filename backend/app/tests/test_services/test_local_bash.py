@@ -48,6 +48,7 @@ async def test_run_bash_non_zero_exit_code_maps_to_fail_result(
     assert result.exit_code != 0
 
 
+@pytest.mark.local
 @pytest.mark.asyncio(loop_scope="session")
 async def test_run_bash_timeout_kills_the_process_group(bash_on) -> None:
     result = await run_bash("sleep 5", timeout=1)
