@@ -22,7 +22,8 @@ from app.core.config import get_settings
 from app.core.database_session import new_async_engine
 from app.core.security.password import get_password_hash
 from app.main import app
-from app.models import RefreshToken, User
+from app.models import AuthSession, RefreshToken, User
+from app.services.auth_sessions import hash_refresh_token
 from app.tests.conftest import default_user_email, default_user_password
 from app.tests.test_auth.token_tests_helper import login, refresh
 
@@ -68,9 +69,11 @@ async def test_refresh_token_via_cookie_without_body(
     assert response.status_code == status.HTTP_200_OK
     # old token is rotated away (used), fresh one went back into the jar
     row = await session.scalar(
-        select(RefreshToken).where(RefreshToken.refresh_token == cookie_token)
+        select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(cookie_token)
+        )
     )
-    assert row is not None and row.used is True
+    assert row is not None and row.used_at is not None
 
 
 async def test_reused_refresh_token_revokes_whole_family(
@@ -81,20 +84,44 @@ async def test_reused_refresh_token_revokes_whole_family(
     stolen = (
         await login(client, default_user.email, default_user_password)
     ).cookies.get(REFRESH_COOKIE)
+    victim_session_id = await session.scalar(
+        select(RefreshToken.session_id).where(
+            RefreshToken.token_hash == hash_refresh_token(stolen)
+        )
+    )
     await refresh(client, stolen)  # legit rotation, stolen is dead now
     # a new login gives the user a second session with its own family row
     await login(client, default_user.email, default_user_password)
 
+    # the grace window is for two tabs racing; replay after it is theft
+    rotated = await session.scalar(
+        select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(stolen)
+        )
+    )
+    assert rotated is not None and rotated.used_at is not None
+    rotated.used_at -= get_settings().security.refresh_rotation_grace_secs + 1
+    await session.commit()
     replay = await refresh(client, stolen)
-    # replayed rotated token -> 401 + every refresh token of the user dies
+    # replayed rotated token -> 401 + only that session dies
     assert replay.status_code == status.HTTP_401_UNAUTHORIZED
     assert replay.json() == {"detail": api_messages.REFRESH_TOKEN_ALREADY_USED}
-    count = await session.scalar(
+    victim_count = await session.scalar(
         select(func.count())
         .select_from(RefreshToken)
-        .where(RefreshToken.user_id == default_user.user_id)
+        .where(RefreshToken.session_id == victim_session_id)
     )
-    assert count == 0
+    assert victim_count == 0
+    victim = await session.get(AuthSession, victim_session_id)
+    assert victim is not None and victim.revoked_at is not None
+    assert (
+        await session.scalar(
+            select(func.count())
+            .select_from(RefreshToken)
+            .where(RefreshToken.user_id == default_user.user_id)
+        )
+        == 1
+    )
 
 
 async def test_concurrent_refreshes_with_same_token_allow_exactly_one(
@@ -154,6 +181,7 @@ async def test_concurrent_refreshes_with_same_token_allow_exactly_one(
         status.HTTP_200_OK,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
     )
 
 

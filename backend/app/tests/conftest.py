@@ -4,6 +4,7 @@ Module for defining basic test fixtures
 
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -22,7 +23,7 @@ from app.core.config import get_settings
 from app.core.security.jwt import create_jwt_token
 from app.core.security.password import get_password_hash
 from app.main import app as fastapi_app
-from app.models import Base, User
+from app.models import AuthSession, Base, User
 
 # tests default to a throwaway sqlite file per xdist worker; export
 # EAGLE_TEST_DB=postgres to run them against a real database like production
@@ -31,7 +32,6 @@ TEST_DB_BACKEND = os.getenv("EAGLE_TEST_DB", "sqlite")
 default_user_id = "b75365d9-7bf9-4f54-add5-aeab333a087b"
 default_user_email = "geralt@wiedzmin.pl"
 default_user_password = "geralt"
-default_user_access_token = create_jwt_token(default_user_id).access_token
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
@@ -161,6 +161,17 @@ async def fixture_default_user(
 
 
 @pytest_asyncio.fixture(name="default_user_headers", scope="function")
-async def fixture_default_user_headers(default_user: User) -> dict[str, str]:
-    """for all client requests set auth header with token"""
-    return {"Authorization": f"Bearer {default_user_access_token}"}
+async def fixture_default_user_headers(
+    session: AsyncSession, default_user: User
+) -> dict[str, str]:
+    """a real auth session is needed now: access tokens carry its id"""
+    auth_session = AuthSession(
+        user_id=default_user.user_id,
+        expires_at=int(time.time()) + 3600,
+        created_at=int(time.time()),
+    )
+    session.add(auth_session)
+    await session.commit()
+    await session.refresh(auth_session)
+    token = create_jwt_token(default_user.user_id, auth_session.id).access_token
+    return {"Authorization": f"Bearer {token}"}

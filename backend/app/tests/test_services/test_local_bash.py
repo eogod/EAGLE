@@ -83,6 +83,17 @@ async def test_run_bash_reject_list_allows_common_tooling(bash_on) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_bash_does_not_inherit_backend_secrets(bash_on, monkeypatch) -> None:
+    monkeypatch.setenv("EAGLE_SECRET_TOKEN", "top-secret")
+    result = await run_bash("env")
+
+    assert result.exit_code == 0
+    assert "EAGLE_SECRET_TOKEN" not in result.output
+    assert "top-secret" not in result.output
+    assert "PATH=" in result.output
+
+
+@pytest.mark.asyncio
 async def test_run_bash_disabled_by_default(monkeypatch) -> None:
     # a local .env may enable bash; force the disabled state for this check
     monkeypatch.setenv("LOCAL_BASH__ENABLED", "0")

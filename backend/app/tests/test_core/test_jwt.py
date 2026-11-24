@@ -16,7 +16,7 @@ from app.core.security import jwt
 @freeze_time("2024-01-01")
 def test_jwt_payload_is_correct() -> None:
     user_id = "test_user_id"
-    token = jwt.create_jwt_token(user_id)
+    token = jwt.create_jwt_token(user_id, session_id=1)
 
     assert token.payload.iat == int(time.time())
     assert token.payload.sub == user_id
@@ -31,7 +31,7 @@ def test_jwt_payload_is_correct() -> None:
 def test_jwt_error_after_exp_time() -> None:
     user_id = "test_user_id"
     with freeze_time("2024-01-01"):
-        token = jwt.create_jwt_token(user_id)
+        token = jwt.create_jwt_token(user_id, session_id=1)
     with freeze_time("2024-02-01"):
         with pytest.raises(HTTPException) as e:
             jwt.verify_jwt_token(token=token.access_token)
@@ -42,7 +42,7 @@ def test_jwt_error_after_exp_time() -> None:
 def test_jwt_error_before_iat_time() -> None:
     user_id = "test_user_id"
     with freeze_time("2024-01-01"):
-        token = jwt.create_jwt_token(user_id)
+        token = jwt.create_jwt_token(user_id, session_id=1)
     with freeze_time("2023-12-01"):
         with pytest.raises(HTTPException) as e:
             jwt.verify_jwt_token(token=token.access_token)
@@ -59,7 +59,7 @@ def test_jwt_error_with_invalid_token() -> None:
 
 def test_jwt_error_with_invalid_issuer() -> None:
     user_id = "test_user_id"
-    token = jwt.create_jwt_token(user_id)
+    token = jwt.create_jwt_token(user_id, session_id=1)
 
     get_settings().security.jwt_issuer = "another_issuer"
 
@@ -71,7 +71,7 @@ def test_jwt_error_with_invalid_issuer() -> None:
 
 def test_jwt_error_with_invalid_secret_key() -> None:
     user_id = "test_user_id"
-    token = jwt.create_jwt_token(user_id)
+    token = jwt.create_jwt_token(user_id, session_id=1)
     ch_now = SecretStr("the secret has changed now!")
     get_settings().security.jwt_secret_key = ch_now
 

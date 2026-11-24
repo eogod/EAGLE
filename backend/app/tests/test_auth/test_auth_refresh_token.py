@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import api_messages
 from app.core.config import get_settings
-from app.models import RefreshToken, User
+from app.models import AuthSession, RefreshToken, User
+from app.services.auth_sessions import hash_refresh_token
 from app.tests.test_auth.token_tests_helper import (
     check_token_expire_time,
     refresh,
@@ -22,6 +23,15 @@ from app.tests.test_auth.token_tests_helper import (
 )
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+
+def _session(user: User, *, expires_at: int | None = None) -> AuthSession:
+    ttl = get_settings().security.refresh_token_expire_secs
+    return AuthSession(
+        user_id=user.user_id,
+        expires_at=expires_at or int(time.time()) + ttl,
+        created_at=int(time.time()),
+    )
 
 
 async def test_refresh_token_fails_with_message_when_token_does_not_exist(
@@ -48,10 +58,14 @@ async def test_refresh_token_fails_with_message_when_token_is_expired(
     default_user: User,
     session: AsyncSession,
 ) -> None:
+    auth_session = _session(default_user)
+    session.add(auth_session)
+    await session.flush()
     session.add(
         RefreshToken(
             user_id=default_user.user_id,
-            refresh_token="blaxx",
+            session_id=auth_session.id,
+            token_hash=hash_refresh_token("blaxx"),
             exp=int(time.time()) - 1,
         )
     )
@@ -69,12 +83,15 @@ async def test_refresh_token_rotates_into_a_valid_session(
     default_user: User,
     session: AsyncSession,
 ) -> None:
+    auth_session = _session(default_user)
+    session.add(auth_session)
+    await session.flush()
     session.add(
         RefreshToken(
             user_id=default_user.user_id,
-            refresh_token="blaxx",
+            session_id=auth_session.id,
+            token_hash=hash_refresh_token("blaxx"),
             exp=int(time.time()) + 1000,
-            used=False,
         )
     )
     await session.commit()
@@ -97,13 +114,17 @@ async def test_refresh_token_rotates_into_a_valid_session(
     assert validate_token_response(token, default_user.user_id)
 
     old_row = await session.scalar(
-        select(RefreshToken).where(RefreshToken.refresh_token == "blaxx")
+        select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token("blaxx")
+        )
     )
     assert old_row is not None
-    assert old_row.used
+    assert old_row.used_at is not None
     new_row = await session.scalar(
-        select(RefreshToken).where(RefreshToken.refresh_token == token["refresh_token"])
+        select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(token["refresh_token"])
+        )
     )
     assert new_row is not None
     assert new_row.user_id == default_user.user_id
-    assert not new_row.used
+    assert new_row.used_at is None

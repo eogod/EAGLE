@@ -121,7 +121,7 @@ async def test_api_routes_raise_401_on_jwt_expired_token(
 ) -> None:
     """test for responses on expired jwt"""
     with freeze_time("2023-01-01"):
-        jwt = create_jwt_token(default_user.user_id)
+        jwt = create_jwt_token(default_user.user_id, session_id=0)
     with freeze_time("2023-02-01"):
         response = await client.request(
             method=api_method,

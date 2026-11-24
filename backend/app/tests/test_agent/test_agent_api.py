@@ -1,6 +1,7 @@
 """HTTP surface: ownership, uploads, SSE run, drafts, cancellation."""
 
 import json
+import time
 import uuid
 
 import pytest
@@ -11,8 +12,9 @@ from app.api import deps
 from app.api.deps import AgentRunController
 from app.api.endpoints.agent_chat import get_agent_provider
 from app.core.config import get_settings
+from app.core.security.jwt import create_jwt_token
 from app.main import app
-from app.models import User
+from app.models import AuthSession, User
 from app.services.llm_service import ToolTurn
 from app.tests.test_agent.fixtures import FINDINGS, FakeProvider, make_draft
 
@@ -110,11 +112,18 @@ async def _other_user_headers(session) -> dict:
         email=f"other-{uuid.uuid4().hex[:8]}@example.com",
         hashed_password="x",
     )
+    auth_session = AuthSession(
+        user_id=other.user_id,
+        expires_at=int(time.time()) + 3600,
+        created_at=int(time.time()),
+    )
     session.add(other)
+    session.add(auth_session)
     await session.commit()
-    from app.core.security.jwt import create_jwt_token  # noqa: PLC0415
+    await session.refresh(auth_session)
 
-    return {"Authorization": f"Bearer {create_jwt_token(other.user_id).access_token}"}
+    token = create_jwt_token(other.user_id, auth_session.id).access_token
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -442,7 +451,7 @@ async def test_plan_mode_imports_as_planned_and_is_replaced(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_edit_mode_adds_step_and_reports_blockers(
+async def test_edit_mode_proposes_then_applies_only_after_approval(
     client: AsyncClient, default_user_headers
 ):
     session_id, chain_name = await _new_chained_session(client, default_user_headers)
@@ -467,8 +476,27 @@ async def test_edit_mode_adds_step_and_reports_blockers(
     )
     assert response.status_code == 200, response.text
     events = _sse_events(response.text)
-    applied = next(data for name, data in events if name == "edit.applied")
-    assert [item["status"] for item in applied["results"]] == ["ok", "ok"]
+    proposed = next(data for name, data in events if name == "edit.proposed")
+    assert proposed["status"] == "proposed"
+
+    # nothing was applied by the chat itself
+    rows = await _chain_steps(client, default_user_headers, session_id)
+    assert rows == []
+
+    proposal_id = proposed["public_id"]
+    approved = await client.post(
+        f"/api/agent/sessions/{session_id}/proposals/{proposal_id}/approve",
+        json={"acknowledge_dangerous": False},
+        headers=default_user_headers,
+    )
+    assert approved.status_code == 200, approved.text
+    applied = await client.post(
+        f"/api/agent/sessions/{session_id}/proposals/{proposal_id}/apply",
+        json={"acknowledge_dangerous": False},
+        headers=default_user_headers,
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["status"] == "applied"
 
     rows = await _chain_steps(client, default_user_headers, session_id)
     assert [(row["status"], row["command"]) for row in rows] == [
@@ -482,7 +510,7 @@ async def test_edit_mode_adds_step_and_reports_blockers(
     assert phase_response.status_code == 200, phase_response.text
     assert phase_response.json()["current_phase_name"] == "Execution"
 
-    # executing without a bash executor is reported per-op, not as a crash
+    # run_step needs its own approval, the edit response cannot smuggle it in
     run_ops = {"operations": [{"op": "run_step", "step_id": rows[0]["id"]}]}
     app.dependency_overrides[get_agent_provider] = lambda: _fake([json.dumps(run_ops)])
     run = await client.post(
@@ -490,11 +518,11 @@ async def test_edit_mode_adds_step_and_reports_blockers(
         json={"content": "run it", "mode": "edit"},
         headers=default_user_headers,
     )
-    run_applied = next(
-        data for name, data in _sse_events(run.text) if name == "edit.applied"
+    invalid = next(
+        data for name, data in _sse_events(run.text) if name == "edit.proposed"
     )
-    assert run_applied["results"][0]["status"] == "error"
-    assert "bash executor" in run_applied["results"][0]["detail"]
+    assert invalid["status"] == "invalid"
+    assert any("run_step" in error for error in invalid["validation"]["errors"])
 
 
 @pytest.mark.asyncio(loop_scope="session")
