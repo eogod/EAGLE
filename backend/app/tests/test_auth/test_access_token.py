@@ -23,7 +23,7 @@ from app.tests.test_auth.token_tests_helper import (
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
-@freeze_time("2023-01-01")
+@freeze_time("2023-01-01", real_asyncio=True)
 async def test_login_returns_a_valid_session(
     client: AsyncClient,
     default_user: User,

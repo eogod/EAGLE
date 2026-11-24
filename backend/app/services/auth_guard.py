@@ -33,8 +33,9 @@ async def _close(
 ) -> None:
     if pending is not None and not pending.done():
         pending.cancel()
-        with suppress(asyncio.CancelledError, StopAsyncIteration):
-            await pending
+        # a producer that ignores cancellation must not hang stream close
+        with suppress(asyncio.CancelledError, StopAsyncIteration, TimeoutError):
+            await asyncio.wait_for(pending, timeout=1)
     close = getattr(iterator, "aclose", None)
     if close is not None:
         await close()

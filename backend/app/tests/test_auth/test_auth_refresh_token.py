@@ -77,7 +77,7 @@ async def test_refresh_token_fails_with_message_when_token_is_expired(
     assert response.json() == {"detail": api_messages.REFRESH_TOKEN_EXPIRED}
 
 
-@freeze_time("2023-01-01")
+@freeze_time("2023-01-01", real_asyncio=True)
 async def test_refresh_token_rotates_into_a_valid_session(
     client: AsyncClient,
     default_user: User,

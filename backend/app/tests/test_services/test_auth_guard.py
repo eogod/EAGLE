@@ -44,7 +44,8 @@ class IdleStream:
         return self
 
     async def __anext__(self) -> str:
-        await asyncio.sleep(3600)
+        # finite, so a broken cancel fails the test instead of hanging ci
+        await asyncio.sleep(0.2)
         raise StopAsyncIteration
 
     async def aclose(self) -> None:
