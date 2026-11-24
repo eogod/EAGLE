@@ -119,6 +119,26 @@ def _cut_output(text: str, cap: int, log_path: str | None) -> str:
     return text[:head].rstrip() + middle + text[-(cap - head) :]
 
 
+# the backend holds JWT/DB/Mythic secrets; a shell command must not inherit them
+_SAFE_ENV = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "TMPDIR",
+)
+
+
+def _child_env() -> dict[str, str]:
+    env = {key: os.environ[key] for key in _SAFE_ENV if key in os.environ}
+    env["TERM"] = "dumb"
+    return env
+
+
 def _spawn(command: str, cwd: str, chain_id: int | None):
     """create_subprocess_shell in its own session, tracked for cancel/shutdown"""
     return asyncio.create_subprocess_shell(  # noqa: S602
@@ -126,7 +146,7 @@ def _spawn(command: str, cwd: str, chain_id: int | None):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
-        env={**os.environ, "TERM": "dumb"},
+        env=_child_env(),
         start_new_session=True,
     )
 
