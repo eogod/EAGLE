@@ -60,7 +60,7 @@ build-backend = "poetry.core.masonry.api"
 requires = ["poetry-core>=1.0.0"]
 
 [tool.pytest.ini_options]
-addopts = "-vv -n auto --cov --cov-branch --cov-report xml --cov-report term-missing"
+addopts = "-vv -n auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_mode = "auto"
 testpaths = ["app/tests"]

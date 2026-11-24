@@ -39,5 +39,8 @@ jobs:
       - name: Lint by oxlint
         run: bun run lint
 
+      - name: Unit and api-contract tests
+        run: bun test
+
       - name: Build errors check
         run: bun run build
