@@ -359,7 +359,9 @@ async def run_chain(
     async with database_session.get_async_session() as session:
         chain_svc = ChainService(session)
         exec_svc = ChainExecutionService(session, ctx.mythic)
-        steps = await chain_svc.get_chain_steps(chain_id)
+        await chain_svc.owned_chain(chain_id, ctx.user)
+        await chain_svc.promote_drafts(chain_id)
+        steps = await chain_svc.steps_for_execution(chain_id)
         sorted_steps = exec_svc.get_sorted_steps(steps)
         cancel_event = asyncio.Event()
         results: list[dict[str, Any]] = []

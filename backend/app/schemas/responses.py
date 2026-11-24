@@ -78,6 +78,7 @@ class AttackStepResponse(BaseResponse):
     mythic_payload_uuid: str | UUID4
     status: str
     raw_log: str
+    is_draft: bool = False
     delay_before_secs: int = 0
     delay_reason: str | None = None
     delay_enabled: bool = True

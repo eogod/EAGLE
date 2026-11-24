@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import { stepApi } from '../entities/stepApi'
 import { chainApi } from '../entities/chainApi'
-import { STEP_STATUS, STEP_TYPES } from '../entities/types'
+import { STEP_STATUS } from '../entities/types'
 
 // task death as the backend reports it: mythic sends error/cancelled,
 // bash sends fail/failed
@@ -40,8 +40,8 @@ export const useRunStep = () => {
   const [runningIds, setRunningIds] = useState(new Set())
 
   const run = useCallback(async (step, phaseName, chainId, onUpdate) => {
-    const id = step.id ?? step._tempId
-    if (!id) return
+    const id = step.id
+    if (id == null) return
 
     if (chainId && phaseName) {
       // cuz backend doesn't know current phase
@@ -50,46 +50,20 @@ export const useRunStep = () => {
 
     // we cannot run steps in parallel for now, works for most kill chains
     setRunningIds((prev) => new Set(prev).add(id))
-    onUpdate?.(id, { status: STEP_STATUS.RUNNING, raw_log: '' })
+    onUpdate?.(step, { status: STEP_STATUS.RUNNING, raw_log: '' })
 
     try {
-      let data
-      if (step.step_type === STEP_TYPES.AGENT) {
-        const res = await stepApi.runAgentCommand({
-          chain_name: step.chain_name,
-          callback_display_id: step.callback_display_id,
-          command_params: step.command_params,
-          tool: step.tool,
-          is_analyze_llm: false,
-          step_id: step.id ?? null,
-        })
-        data = res.data
-      } else if (step.step_type === STEP_TYPES.BASH) {
-        // same ticket + events flow as agent steps
-        const res = await stepApi.runBash({
-          chain_name: step.chain_name,
-          command: step.command,
-          timeout: 3600,
-          step_id: step.id ?? null,
-        })
-        data = res.data
-      } else {
-        const res = await stepApi.runLocalCommand({
-          chain_name: step.chain_name,
-          callback_display_id: step.callback_display_id,
-          command: step.command,
-          is_analyze_llm: false,
-          step_id: step.id ?? null,
-        })
-        data = res.data
-      }
+      // the command is read from the db, not from the editor state
+      const data = await stepApi.runStoredStep(id)
+      // the backend promotes the draft when it starts running it
+      if (step.is_draft) onUpdate?.(step, { is_draft: false })
 
       // backend creates the task with a ticket, output & status arrive by
       // stream; statuses like submitted/building stay RUNNING until terminal rows
       if (!data.step_id || data.status === 'failed') {
         // backend raises 4xx/5xx when submit fails, so this branch is an
         // unexpected case, kept to hold the contract for future flows
-        onUpdate?.(id, {
+        onUpdate?.(step, {
           status: STEP_STATUS.SUCCESS,
           raw_log: cleanBytesOutput(data.raw_output ?? ''),
         })
@@ -129,7 +103,7 @@ export const useRunStep = () => {
                 if (out !== undefined) {
                   resolved = true
                   controller.abort()
-                  onUpdate?.(id, {
+                  onUpdate?.(step, {
                     status: snap.status === 'success' ? STEP_STATUS.SUCCESS : STEP_STATUS.ERROR,
                     raw_log: cleanBytesOutput(out),
                   })
@@ -141,7 +115,7 @@ export const useRunStep = () => {
             if (kind === 'output') {
               resolved = true
               controller.abort()
-              onUpdate?.(id, {
+              onUpdate?.(step, {
                 // mythic output rows carry no status, so keep the failure seen earlier
                 status:
                   failed || FAILED_STATUSES.has(event.status)
@@ -152,7 +126,7 @@ export const useRunStep = () => {
               return
             }
             if (kind === 'build' && event.status) {
-              onUpdate?.(id, {
+              onUpdate?.(step, {
                 status: event.status === 'success' ? STEP_STATUS.SUCCESS : STEP_STATUS.RUNNING,
                 raw_log: event.status === 'success' ? cleanBytesOutput(event.raw_log ?? '') : '',
               })
@@ -167,16 +141,16 @@ export const useRunStep = () => {
                 // the output row comes after the terminal status: keep the
                 // stream open so the real log lands, not the word "failed"
                 failed = true
-                onUpdate?.(id, { status: STEP_STATUS.ERROR })
+                onUpdate?.(step, { status: STEP_STATUS.ERROR })
                 closeSoon()
                 return
               }
               if (event.completed) {
-                onUpdate?.(id, { status: STEP_STATUS.SUCCESS })
+                onUpdate?.(step, { status: STEP_STATUS.SUCCESS })
                 closeSoon()
                 return
               }
-              onUpdate?.(id, { status: STEP_STATUS.RUNNING })
+              onUpdate?.(step, { status: STEP_STATUS.RUNNING })
             }
           },
           controller.signal,
@@ -191,7 +165,7 @@ export const useRunStep = () => {
 
       return data
     } catch (err) {
-      onUpdate?.(id, {
+      onUpdate?.(step, {
         status: STEP_STATUS.ERROR,
         raw_log: err?.response?.data?.detail ?? err.message,
       })

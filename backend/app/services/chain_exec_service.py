@@ -213,6 +213,7 @@ class ChainExecutionService:
             s
             for s in steps
             if s.status not in ("submitted", "running", "rejected")
+            and not s.is_draft
             and s.command.strip()
         ]
         return sorted(executable, key=lambda step: step.id)

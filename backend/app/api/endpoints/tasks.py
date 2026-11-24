@@ -6,6 +6,8 @@ based on chain id or commands and payloads from exported chain
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import (
@@ -16,19 +18,25 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import select
 
+from app.agent.edit_plan import StepSnapshot, step_fingerprint
 from app.api import deps
-from app.api.deps import ChainController, get_chain_controller
+from app.api.deps import AuthContext, ChainController, get_chain_controller
 from app.cmd.mythic_events import MythicEventsService
-from app.models import User
+from app.core.config import get_settings
+from app.models import Agent, User
 from app.schemas.requests import (
     ActionApprovalRequest,
     ActionExecutionRequest,
     AgentCommandRequest,
     BashCommandRequest,
+    DraftStepCreate,
     LocalCommandRequest,
     NewAgentRequest,
     NewChainRequest,
+    RunStepRequest,
+    StepUpdate,
 )
 from app.schemas.responses import (
     AttackStepResponse,
@@ -42,6 +50,7 @@ from app.schemas.responses import (
     NewPayloadResponse,
     NewPhaseResponse,
 )
+from app.services.auth_guard import StreamGuard, guarded_stream, session_active
 from app.services.bash_service import BashCommandService
 from app.services.c2_service import CommandsC2ExecService
 from app.services.chain_exec_service import ChainExecutionService
@@ -57,6 +66,23 @@ from app.services.s_deps import (
 )
 
 router = APIRouter()
+
+
+@dataclass(frozen=True)
+class StepRunDeps:
+    """one dependency so the endpoint signature stays readable"""
+
+    chain: ChainService
+    command: CommandsC2ExecService
+    bash: BashCommandService
+
+
+def get_step_run_deps(
+    chain: ChainService = Depends(get_chain_service),
+    command: CommandsC2ExecService = Depends(get_command_service),
+    bash: BashCommandService = Depends(get_bash_service),
+) -> StepRunDeps:
+    return StepRunDeps(chain=chain, command=command, bash=bash)
 
 
 @router.get(
@@ -238,10 +264,11 @@ async def read_agent_status(
 )
 async def read_step_snapshot(
     step_id: int,
-    current_user: User = Depends(deps.get_current_user),  # noqa: ARG001
+    current_user: User = Depends(deps.get_current_user),
+    chain_service: ChainService = Depends(get_chain_service),
     command_service: CommandsC2ExecService = Depends(get_command_service),
 ) -> dict[str, Any]:
-    """current_user is only the auth gate"""
+    await chain_service.owned_step(step_id, current_user)
     return await command_service.get_step_with_tasks(step_id)
 
 
@@ -252,15 +279,27 @@ async def read_step_snapshot(
 )
 async def step_events(  # noqa: PLR0913, PLR0917
     step_id: int,
-    current_user: User = Depends(deps.get_current_user),  # noqa: ARG001
+    current_user: User = Depends(deps.get_current_user),
+    ctx: AuthContext = Depends(deps.get_auth_context),
+    chain_service: ChainService = Depends(get_chain_service),
     command_service: CommandsC2ExecService = Depends(get_command_service),
     events_service: MythicEventsService = Depends(get_events_service),
 ) -> StreamingResponse:
-    """current_user is only the auth gate"""
+    await chain_service.owned_step(step_id, current_user)
     snapshot = await command_service.get_step_with_tasks(step_id)
     # stream protocol (terminal/grace/idle) lives in the events service
+    inner = events_service.stream_step_events(step_id, snapshot)
+    terminal = json.dumps({"event": "auth.revoked", "step_id": step_id})
     return StreamingResponse(
-        events_service.stream_step_events(step_id, snapshot),
+        guarded_stream(
+            inner,
+            StreamGuard(
+                session_id=ctx.session_id,
+                user_id=ctx.user_id,
+                interval=get_settings().security.stream_auth_recheck_secs,
+                terminal=terminal,
+            ),
+        ),
         media_type="application/json",
     )
 
@@ -340,11 +379,13 @@ async def delete_step(
 )
 async def edit_step(
     step_id: int,
-    patch: dict[str, Any],
+    patch: StepUpdate,
     current_user: User = Depends(deps.get_current_user),
     chain_service: ChainService = Depends(get_chain_service),
 ):
-    step = await chain_service.edit_step(step_id, current_user, patch)
+    step = await chain_service.edit_step(
+        step_id, current_user, patch.model_dump(exclude_unset=True)
+    )
     return {
         "id": step.id,
         "chain_id": step.chain_id,
@@ -389,11 +430,10 @@ async def set_phase_timing(
 )
 async def next_phase(
     chain_id: int,
-    current_user: User = Depends(deps.get_current_user),  # noqa: ARG001
+    current_user: User = Depends(deps.get_current_user),
     chain_service: ChainService = Depends(get_chain_service),
 ) -> NewPhaseResponse:
-    """current_user is only the auth gate, ownership checked in service layer"""
-    c_id, phase = await chain_service.next_phase(chain_id)
+    c_id, phase = await chain_service.next_phase(chain_id, current_user)
     return NewPhaseResponse(chain_id=c_id, current_phase_name=phase)
 
 
@@ -405,11 +445,10 @@ async def next_phase(
 async def set_phase(
     chain_id: int,
     phase_name: str,
-    current_user: User = Depends(deps.get_current_user),  # noqa: ARG001
+    current_user: User = Depends(deps.get_current_user),
     chain_service: ChainService = Depends(get_chain_service),
 ) -> NewPhaseResponse:
-    """current_user is only the auth gate, ownership checked in service layer"""
-    c_id, phase = await chain_service.set_phase(chain_id, phase_name)
+    c_id, phase = await chain_service.set_phase(chain_id, phase_name, current_user)
     return NewPhaseResponse(chain_id=c_id, current_phase_name=phase)
 
 
@@ -428,6 +467,126 @@ async def reject_last_step_or_cmd(
 
 
 @router.post(
+    "/chain/{chain_id}/draft-steps",
+    response_model=AttackStepResponse,
+    description="Create an operator draft step; it is not executable until promoted",
+)
+async def create_draft_step(
+    chain_id: int,
+    data: DraftStepCreate,
+    current_user: User = Depends(deps.get_current_user),
+    chain_service: ChainService = Depends(get_chain_service),
+) -> AttackStepResponse:
+    step = await chain_service.create_draft_step(chain_id, current_user, data)
+    return AttackStepResponse.from_orm(step)
+
+
+@router.patch(
+    "/chain/{chain_id}/draft-steps/{step_id}",
+    response_model=AttackStepResponse,
+    description="Edit a draft step only; real steps are a different route",
+)
+async def edit_draft_step(
+    chain_id: int,
+    step_id: int,
+    patch: StepUpdate,
+    current_user: User = Depends(deps.get_current_user),
+    chain_service: ChainService = Depends(get_chain_service),
+) -> AttackStepResponse:
+    step = await chain_service.edit_draft_step(
+        chain_id, step_id, current_user, patch.model_dump(exclude_unset=True)
+    )
+    return AttackStepResponse.from_orm(step)
+
+
+@router.delete(
+    "/chain/{chain_id}/draft-steps/{step_id}",
+    description="Delete a draft step only; real steps are a different route",
+)
+async def delete_draft_step(
+    chain_id: int,
+    step_id: int,
+    current_user: User = Depends(deps.get_current_user),
+    chain_service: ChainService = Depends(get_chain_service),
+) -> dict[str, Any]:
+    await chain_service.delete_draft_step(chain_id, step_id, current_user)
+    return {"status": "deleted", "step_id": step_id}
+
+
+@router.post(
+    "/steps/{step_id}/run",
+    description="Run one stored step; the command always comes from the database",
+)
+async def run_stored_step(
+    step_id: int,
+    data: RunStepRequest,
+    current_user: User = Depends(deps.get_current_user),
+    services: StepRunDeps = Depends(get_step_run_deps),
+) -> dict[str, Any]:
+    step = await services.chain.owned_step(step_id, current_user)
+    if step.status not in ("planned", "pending"):
+        raise HTTPException(status_code=409, detail="Step is already executed")
+    if not step.command.strip():
+        raise HTTPException(status_code=422, detail="Step has no command")
+    if data.expected_step_fingerprint:
+        current = step_fingerprint(
+            StepSnapshot(
+                id=step.id,
+                phase=step.phase,
+                step_type=step.step_type,
+                tool_name=step.tool_name,
+                command=step.command,
+                status=step.status,
+                mythic_task_id=step.mythic_task_id,
+                mythic_payload_id=step.mythic_payload_id,
+                mythic_payload_uuid=str(step.mythic_payload_uuid),
+                delay_before_secs=step.delay_before_secs,
+            )
+        )
+        if current != data.expected_step_fingerprint:
+            raise HTTPException(status_code=409, detail="Step changed; review again")
+    chain = await services.chain.owned_chain(step.chain_id, current_user)
+    if step.is_draft:
+        step.is_draft = False
+        await services.chain.session.commit()
+
+    if step.step_type == "bash":
+        result = await services.bash.start(
+            step.command,
+            chain.chain_name,
+            current_user,
+            timeout=get_settings().local_bash.timeout,
+            step_id=step.id,
+        )
+        return {"step_type": "bash", **result}
+
+    agent = await services.chain.session.scalar(
+        select(Agent).where(Agent.step_id == step.id)
+    )
+    display_id = agent.callback_display_id if agent else 0
+    if step.step_type == "agent":
+        result = await services.command.run_agent_command(
+            step.command,
+            display_id,
+            step.tool_name,
+            chain.id,
+            step.phase,
+            current_user,
+            step_id=step.id,
+        )
+    else:
+        result = await services.command.run_local_command(
+            step.command,
+            display_id,
+            chain.id,
+            step.phase,
+            current_user,
+            step_id=step.id,
+        )
+    return result
+
+
+@router.post(
     "/run-chain/{chain_id}",
     description="Run attack chain from db by id",
 )
@@ -436,19 +595,33 @@ async def run_chain(  # noqa: PLR0913, PLR0917
     zero_display_id: int,
     timing: bool = False,
     current_user: User = Depends(deps.get_current_user),
+    ctx: AuthContext = Depends(deps.get_auth_context),
     chain_service: ChainService = Depends(get_chain_service),
     chain_execution_service: ChainExecutionService = Depends(
         get_chain_execution_service
     ),
     chain_controller: ChainController = Depends(get_chain_controller),
 ) -> StreamingResponse:
-    steps = await chain_service.get_chain_steps(chain_id)
+    await chain_service.owned_chain(chain_id, current_user)
+    await chain_service.promote_drafts(chain_id)
+    steps = await chain_service.steps_for_execution(chain_id)
     sorted_steps = chain_execution_service.get_sorted_steps(steps)
     cancel_event = asyncio.Event()
     chain_controller.active_chains[chain_id] = cancel_event
+    inner = chain_execution_service.perform_chain_step(
+        sorted_steps, zero_display_id, cancel_event, timing
+    )
+    terminal = json.dumps({"event": "auth.revoked", "chain_id": chain_id})
     return StreamingResponse(
-        chain_execution_service.perform_chain_step(
-            sorted_steps, zero_display_id, cancel_event, timing
+        guarded_stream(
+            inner,
+            StreamGuard(
+                session_id=ctx.session_id,
+                user_id=ctx.user_id,
+                interval=get_settings().security.stream_auth_recheck_secs,
+                terminal=terminal,
+                on_revoke=lambda: chain_controller.cancel_chain(chain_id),
+            ),
         ),
         media_type="application/json",
     )
@@ -458,17 +631,34 @@ async def run_chain(  # noqa: PLR0913, PLR0917
 async def cancel_chain_ws(
     websocket: WebSocket,
     chain_id: int,
-    current_user: User = Depends(deps.get_current_user),  # noqa: ARG001
+    current_user: User = Depends(deps.get_current_user),
     chain_service: ChainService = Depends(get_chain_service),
     chain_controller: ChainController = Depends(get_chain_controller),
 ) -> None:
-    """current_user is only the auth gate, cookies ride the ws upgrade"""
+    """cookies ride the ws upgrade; the name is a confirmation, not a secret"""
     await websocket.accept()
+    interval = get_settings().security.stream_auth_recheck_secs
     try:
-        chain_name = await websocket.receive_text()
-        verified = await chain_service.verify_chain_name(chain_id, chain_name)
-        if verified:
-            chain_controller.cancel_chain(chain_id)
+        while True:
+            try:
+                chain_name = await asyncio.wait_for(
+                    websocket.receive_text(), timeout=interval
+                )
+            except TimeoutError:
+                if not await session_active(
+                    websocket.state.auth_session_id,
+                    websocket.state.auth_user_id,
+                ):
+                    chain_controller.cancel_chain(chain_id)
+                    await websocket.close(code=4401)
+                    return
+                continue
+            verified = await chain_service.verify_chain_name(
+                chain_id, chain_name, current_user
+            )
+            if verified:
+                chain_controller.cancel_chain(chain_id)
+            return
     except WebSocketDisconnect:
         pass
 
@@ -477,12 +667,11 @@ async def cancel_chain_ws(
 async def cancel_chain_a_http(
     chain_id: int,
     chain_name: str,
-    current_user: User = Depends(deps.get_current_user),  # noqa: ARG001
+    current_user: User = Depends(deps.get_current_user),
     chain_service: ChainService = Depends(get_chain_service),
     chain_controller: ChainController = Depends(get_chain_controller),
 ) -> JSONResponse:
-    """current_user is only the auth gate, chain name itself is the secret"""
-    verified = await chain_service.verify_chain_name(chain_id, chain_name)
+    verified = await chain_service.verify_chain_name(chain_id, chain_name, current_user)
     if verified:
         chain_controller.cancel_chain(chain_id)
     return JSONResponse(content={"status": "canceled", "chain_name": chain_name})
@@ -491,19 +680,25 @@ async def cancel_chain_a_http(
 @router.post("/approve-action")
 async def approve_action_from_llm(
     action_request: ActionApprovalRequest,
-    current_user: User = Depends(deps.get_current_user),  # noqa: ARG001
+    current_user: User = Depends(deps.get_current_user),
+    chain_service: ChainService = Depends(get_chain_service),
     command_service: CommandsC2ExecService = Depends(get_command_service),
 ) -> dict[str, Any]:
-    """current_user is only the auth gate, actions execute on real agents"""
+    step = await chain_service.owned_step(
+        action_request.step_id, current_user, drafts=False
+    )
+    agent = await chain_service.session.scalar(
+        select(Agent).where(Agent.step_id == step.id)
+    )
     try:
         result = await command_service.approve_action(
-            command=action_request.command,
-            chain_id=action_request.chain_id,
-            phase=action_request.phase,
-            agent_id=action_request.agent_id,
-            type_cmd=action_request.type_cmd,
-            type_tool=action_request.type_tool,
-            target_os_type=action_request.target_os_type,
+            command=step.command,
+            chain_id=step.chain_id,
+            phase=step.phase,
+            agent_id=agent.callback_display_id if agent else 0,
+            type_cmd=step.step_type,
+            type_tool=step.tool_name,
+            target_os_type=agent.os_type if agent else "",
         )
         return {
             "success": True,
@@ -522,18 +717,22 @@ async def approve_action_from_llm(
 @router.post("/api/llm/action/execute")
 async def execute_approved_action(
     action_request: ActionExecutionRequest,
-    current_user: User = Depends(deps.get_current_user),  # noqa: ARG001
+    current_user: User = Depends(deps.get_current_user),
+    chain_service: ChainService = Depends(get_chain_service),
     command_service: CommandsC2ExecService = Depends(get_command_service),
 ) -> dict[str, Any]:
-    """current_user is only the auth gate, actions execute on real agents"""
+    step = await chain_service.owned_step(
+        action_request.step_id, current_user, drafts=False
+    )
+    agent = await chain_service.session.scalar(
+        select(Agent).where(Agent.step_id == step.id)
+    )
     try:
-        if not action_request.command:
-            raise HTTPException(status_code=400, detail="Command is required")
         result = await command_service.execute_approved_action(
-            command=action_request.command,
-            agent_display_id=action_request.agent_display_id,
-            chain_id=action_request.chain_id,
-            phase=action_request.phase,
+            command=step.command,
+            agent_display_id=agent.callback_display_id if agent else 0,
+            chain_id=step.chain_id,
+            phase=step.phase,
         )
         return {
             "success": True,

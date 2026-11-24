@@ -85,6 +85,21 @@ export const stepApi = {
 
   updateStep: (stepId, patch) => api.patch(`${BASE}/step/${stepId}`, patch).then((res) => res.data),
 
+  createDraftStep: (chainId, body) =>
+    api.post(`${BASE}/chain/${chainId}/draft-steps`, body).then((res) => res.data),
+
+  updateDraftStep: (chainId, stepId, patch) =>
+    api.patch(`${BASE}/chain/${chainId}/draft-steps/${stepId}`, patch).then((res) => res.data),
+
+  deleteDraftStep: (chainId, stepId) =>
+    api.delete(`${BASE}/chain/${chainId}/draft-steps/${stepId}`).then((res) => res.data),
+
+  // the command comes from the db, so a run never races a stale editor value
+  runStoredStep: (stepId) =>
+    api
+      .post(`${BASE}/steps/${stepId}/run`, { expected_step_fingerprint: null })
+      .then((res) => res.data),
+
   // one phase checkbox flips dwell for the whole column
   updatePhaseTiming: (chainId, phase, enabled) =>
     api

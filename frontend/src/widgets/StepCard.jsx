@@ -73,7 +73,7 @@ const ResizeHandle = ({ onStart, onFit, title }) => (
 export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, timing }) => {
   const cmdRef = useRef(null)
   const outRef = useRef(null)
-  const heightKey = `${step.chain_name}:${step.id ?? step._tempId}`
+  const heightKey = `${step.chain_name}:${step.id ? `step-${step.id}` : `temp-${step._tempId}`}`
   const [cmdHeight, setCmdHeight] = useState(() => readHeight(`${heightKey}:cmd`, 88))
   const [outHeight, setOutHeight] = useState(() => readHeight(`${heightKey}:out`, 180))
 
@@ -189,8 +189,8 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
   const isPlanned = step.status === 'planned'
   const command = (isAgent ? step.command_params : step.command) ?? ''
   const unexecuted = step.status === 'pending' || isPlanned
-  // executed steps can be replayed in place (same row, refreshed output)
-  const canRun = step.status !== 'running' && command.trim().length > 0
+  // /steps/{id}/run accepts only planned/pending rows
+  const canRun = !!step.id && unexecuted && command.trim().length > 0
 
   return (
     <div
@@ -203,7 +203,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
         <Input
           as="select"
           value={step.step_type === STEP_TYPES.BASH ? STEP_TYPES.LOCAL : step.step_type}
-          onChange={(e) => onUpdate(step.id ?? step._tempId, { step_type: e.target.value })}
+          onChange={(e) => onUpdate(step, { step_type: e.target.value })}
           className="h-7 w-[112px] px-1.5 text-[11px]"
         >
           <option value={STEP_TYPES.LOCAL}>Local (C2)</option>
@@ -215,7 +215,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
             type="checkbox"
             checked={isBash}
             onChange={(e) =>
-              onUpdate(step.id ?? step._tempId, {
+              onUpdate(step, {
                 step_type: e.target.checked
                   ? STEP_TYPES.BASH
                   : isAgent
@@ -235,6 +235,15 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
             ? ` wait ${Math.floor(waitLeft / 60)}:${String(waitLeft % 60).padStart(2, '0')}`
             : ''}
         </span>
+
+        {step.is_draft && (
+          <span
+            className="shrink-0 rounded border border-subtle px-1 py-0.5 font-mono text-[10px] uppercase text-muted"
+            title="Draft: kept in the editor until run or chain start"
+          >
+            draft
+          </span>
+        )}
       </div>
 
       {!isBash && (
@@ -251,7 +260,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
             inputMode="numeric"
             value={step.callback_display_id ?? 0}
             onChange={(e) =>
-              onUpdate(step.id ?? step._tempId, {
+              onUpdate(step, {
                 callback_display_id: parseInt(e.target.value) || 0,
               })
             }
@@ -266,7 +275,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
         <TransparentInput
           type="text"
           value={step.tool_name ?? ''}
-          onChange={(e) => onUpdate(step.id ?? step._tempId, { tool_name: e.target.value })}
+          onChange={(e) => onUpdate(step, { tool_name: e.target.value })}
           placeholder="Tool name"
         />
       )}
@@ -278,7 +287,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
           <TextInput
             type="text"
             value={step.tool ?? ''}
-            onChange={(e) => onUpdate(step.id ?? step._tempId, { tool: e.target.value })}
+            onChange={(e) => onUpdate(step, { tool: e.target.value })}
             placeholder="shell, libinject…"
           />
         </div>
@@ -293,9 +302,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
             <input
               type="checkbox"
               checked={step.delay_enabled !== false}
-              onChange={(event) =>
-                onUpdate(step.id ?? step._tempId, { delay_enabled: event.target.checked })
-              }
+              onChange={(event) => onUpdate(step, { delay_enabled: event.target.checked })}
               className="accent-current"
             />
             Dwell
@@ -305,7 +312,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
             inputMode="numeric"
             value={delayMinutes}
             onChange={(event) =>
-              onUpdate(step.id ?? step._tempId, {
+              onUpdate(step, {
                 delay_before_secs: (parseInt(event.target.value, 10) || 0) * 60,
               })
             }
@@ -315,9 +322,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
           <Input
             type="text"
             value={step.delay_reason ?? ''}
-            onChange={(event) =>
-              onUpdate(step.id ?? step._tempId, { delay_reason: event.target.value })
-            }
+            onChange={(event) => onUpdate(step, { delay_reason: event.target.value })}
             placeholder="what the attacker did in that time"
             className="h-7 min-w-0 flex-1 px-1.5 text-[11px]"
           />
@@ -330,7 +335,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
         style={{ height: `${cmdHeight}px`, maxHeight: 'none', minHeight: `${MIN_HEIGHT}px` }}
         value={isAgent ? (step.command_params ?? '') : (step.command ?? '')}
         onChange={(e) =>
-          onUpdate(step.id ?? step._tempId, {
+          onUpdate(step, {
             [isAgent ? 'command_params' : 'command']: e.target.value,
           })
         }
@@ -354,7 +359,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
             ref={outRef}
             style={{ height: `${outHeight}px`, maxHeight: 'none', minHeight: `${MIN_HEIGHT}px` }}
             value={step.raw_log ?? ''}
-            onChange={(e) => onUpdate(step.id ?? step._tempId, { raw_log: e.target.value })}
+            onChange={(e) => onUpdate(step, { raw_log: e.target.value })}
             placeholder="No output yet"
             readOnly
           />
@@ -372,7 +377,7 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
           onClick={(e) => {
             e.stopPropagation() // prevent other event handlers here
             if (!window.confirm('Delete this step?')) return
-            onDelete(step.id ?? step._tempId)
+            onDelete(step)
           }}
         >
           Delete
@@ -402,7 +407,15 @@ export const StepCard = ({ step, ordinal, onRun, onDelete, onCopy, onUpdate, tim
             onRun(step)
           }}
           disabled={step.status === 'running' || !canRun}
-          title={canRun ? 'Run this step' : unexecuted ? 'No command yet' : 'Run in progress'}
+          title={
+            canRun
+              ? 'Run this step'
+              : step.status === 'running'
+                ? 'Run in progress'
+                : !unexecuted
+                  ? 'Step already executed'
+                  : 'No command yet'
+          }
         >
           {step.status === 'running' ? (
             <ArrowClockwiseIcon size={14} className="animate-spin" />

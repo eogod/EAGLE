@@ -36,6 +36,7 @@ def apply_execution(target: AttackStep, produced: AttackStep) -> AttackStep:
     target.raw_log = produced.raw_log
     target.llm_analysis = produced.llm_analysis
     target.status = produced.status
+    target.is_draft = False
     target.executed_at = datetime.now(UTC)
 
     return target

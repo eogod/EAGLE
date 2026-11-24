@@ -255,7 +255,7 @@ export const Column = ({
           ) : (
             steps.map((step, stepIndex) => (
               <StepCard
-                key={step.id ?? step._tempId}
+                key={step._tempId ? `temp-${step._tempId}` : step.id}
                 step={step}
                 ordinal={stepIndex + 1}
                 onRun={onRunStep}

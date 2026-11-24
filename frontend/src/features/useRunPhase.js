@@ -20,25 +20,27 @@ export const useRunPhase = (onUpdate, { timing = false } = {}) => {
     async (phaseName, chainId, steps) => {
       runControl.reset()
 
-      // replay phase: every step with a command, except one already running
+      // replay phase: every stored, still runnable step with a command
       const runnable = steps.filter(
-        (step) => step.status !== 'running' && (step.command || step.command_params || '').trim(),
+        (step) =>
+          step.id != null &&
+          (step.status === 'pending' || step.status === 'planned') &&
+          (step.command || step.command_params || '').trim(),
       )
 
       for (const [i, step] of runnable.entries()) {
         if (runControl.stopped) break
-        const id = step.id ?? step._tempId
         const dwellMs =
           timing && step.delay_enabled !== false ? (step.delay_before_secs ?? 0) * 1000 : 0
 
         if (dwellMs > 0) {
           // the card counts down the same wall clock a chain run streams
-          onUpdate?.(id, {
+          onUpdate?.(step, {
             wait_until: Date.now() + dwellMs,
             wait_seconds: Math.round(dwellMs / 1000),
           })
           await waitFor(dwellMs)
-          onUpdate?.(id, { wait_until: null, wait_seconds: null })
+          onUpdate?.(step, { wait_until: null, wait_seconds: null })
         } else if (i > 0) {
           // run each step, after response next with little timeout for host
           await new Promise((resolve) => setTimeout(resolve, 700))

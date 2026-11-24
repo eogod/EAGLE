@@ -2,7 +2,9 @@
 Module to defining requests types and format
 """
 
-from pydantic import BaseModel, EmailStr
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class BaseRequest(BaseModel):
@@ -23,6 +25,32 @@ class UserCreateRequest(BaseRequest):
     password: str
     role: str
     username: str
+
+
+class StepUpdate(BaseRequest):
+    """client-editable step fields; status and output belong to the server"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phase: str | None = None
+    step_type: Literal["local", "agent", "bash"] | None = None
+    tool_name: str | None = Field(default=None, max_length=64)
+    command: str | None = Field(default=None, max_length=4000)
+    delay_before_secs: int | None = None
+    delay_reason: str | None = Field(default=None, max_length=200)
+    delay_enabled: bool | None = None
+
+
+class DraftStepCreate(BaseRequest):
+    phase: str
+    step_type: Literal["local", "agent", "bash"] = "local"
+    tool_name: str = Field(default="shell", max_length=64)
+    command: str = Field(min_length=1, max_length=4000)
+    delay_before_secs: int = 0
+
+
+class RunStepRequest(BaseRequest):
+    expected_step_fingerprint: str | None = Field(default=None, max_length=64)
 
 
 class NewChainRequest(BaseRequest):
@@ -64,27 +92,16 @@ class AgentCommandRequest(BaseRequest):
 
 
 class ActionApprovalRequest(BaseModel):
-    """Модель запроса для одобрения действий"""
+    """commands are read from the stored step, never from the request body"""
 
-    command: str
-    agent_id: int
-    chain_id: int
-    phase: str
-    type_cmd: str
-    type_tool: str
-    target_os_type: str
-    approved_by: str
+    step_id: int
+    approved_by: str = ""
     reason: str | None = ""
 
 
 class ActionExecutionRequest(BaseModel):
-    """Модель запроса для выполнения одобренных действий"""
-
-    command: str
-    agent_display_id: int
-    chain_id: int
-    phase: str
-    approved_by: str
+    step_id: int
+    approved_by: str = ""
     context: str | None = ""
 
 
