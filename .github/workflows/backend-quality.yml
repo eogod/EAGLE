@@ -36,4 +36,4 @@ jobs:
 
       - name: Core tests
         working-directory: backend
-        run: poetry run pytest app/tests/test_core -n0 --timeout=60
+        run: poetry run pytest app/tests/test_core -n0 --timeout=60 --noconftest
