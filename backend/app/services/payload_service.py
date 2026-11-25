@@ -23,6 +23,7 @@ class AgentPayloadService:
         self.session = session
         self.mythic_client = mythic_client
 
+    # TODO: add local build recipes with a pinned toolchain; Mythic is the only build path.
     async def create_payload(
         self,
         chain_id: int,
@@ -52,6 +53,7 @@ class AgentPayloadService:
         download_url = f"https://{ip}:{port}/direct/download/{uuid}"
         return {
             "chain_id": chain_id,
+            "step_id": payload_step.id,
             "status": payload_step.status,
             "phase": payload_step.phase,
             "download_url": download_url,
@@ -76,7 +78,7 @@ class AgentPayloadService:
         ctx = ChainContext(chain_id=chain_id, phase_name=phase_name)
         res = await process_new_callback(
             ctx,
-            "getcallback_get_agent_callback_after",
+            "get_agent_callback_after",
             rhost,
             last_step.id,
             mythic_client=self.mythic_client,

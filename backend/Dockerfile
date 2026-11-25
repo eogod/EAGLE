@@ -1,11 +1,11 @@
-FROM python:3.13.5-slim-bookworm AS base
+FROM python:3.14-slim-bookworm AS base
 
 ENV PYTHONUNBUFFERED=1
 WORKDIR /build
 
 # Create requirements.txt file
 FROM base AS poetry
-RUN pip install poetry==2.1.3
+RUN pip install poetry==2.3.1
 RUN poetry self add poetry-plugin-export
 COPY poetry.lock pyproject.toml ./
 RUN poetry export -o /requirements.txt --without-hashes

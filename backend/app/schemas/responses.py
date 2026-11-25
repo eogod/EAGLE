@@ -12,7 +12,7 @@ class BaseResponse(BaseModel):
 
 
 class AccessTokenResponse(BaseResponse):
-    token_type: str = "Bearer"
+    token_type: str = "Bearer"  # noqa: S105
     access_token: str
     expires_at: int
     refresh_token: str
@@ -32,6 +32,12 @@ class NewChainResponse(BaseResponse):
     current_phase_name: str
 
 
+class ChainOverviewResponse(BaseResponse):
+    chain_id: int
+    chain_name: str
+    current_phase_name: str
+
+
 class NewPhaseResponse(BaseResponse):
     chain_id: int
     current_phase_name: str
@@ -41,7 +47,9 @@ class LocalCommandResponse(BaseResponse):
     user_id: UUID4
     chain_name: str
     callback_display_id: int
+    step_id: int | None
     mythic_task_id: int
+    step_type: str = "local"
     tool_name: str
     command: str
     status: str
@@ -49,15 +57,31 @@ class LocalCommandResponse(BaseResponse):
     llm_analysis: str
 
 
+class BashCommandResponse(BaseResponse):
+    chain_name: str
+    step_id: int
+    bash_task_id: int
+    step_type: str
+    command: str
+    status: str
+
+
 class AttackStepResponse(BaseResponse):
     id: int | None
     chain_id: int | None
     phase: str
+    step_type: str = "local"
     tool_name: str
     command: str
+    # synthetic: only the chain-with-steps path joins Agent rows; 0 is safe
+    callback_display_id: int = 0
     mythic_payload_uuid: str | UUID4
     status: str
     raw_log: str
+    is_draft: bool = False
+    delay_before_secs: int = 0
+    delay_reason: str | None = None
+    delay_enabled: bool = True
 
     model_config: ClassVar[ConfigDict] = ConfigDict(from_attributes=True)
 
@@ -73,6 +97,13 @@ class GetChainPhaseResponse(BaseResponse):
     last_attack_step: AttackStepResponse | None
 
 
+class ChainWithStepsResponse(BaseResponse):
+    chain_id: int
+    chain_name: str
+    current_phase_name: str
+    steps: list[AttackStepResponse]
+
+
 class NewAgentResponse(BaseResponse):
     callback_display_id: int
     status: str
@@ -83,6 +114,7 @@ class NewAgentResponse(BaseResponse):
 class NewPayloadResponse(BaseResponse):
     chain_id: int
     status: str
+    step_id: int | None
     phase: str
     payload_type: str | None  # based on os
     payload_uuid: str | UUID4

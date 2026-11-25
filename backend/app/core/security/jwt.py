@@ -6,7 +6,7 @@ import time
 
 import jwt
 from fastapi import HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
 
@@ -20,6 +20,7 @@ class JWTTokenPayload(BaseModel):
     sub: str
     exp: int
     iat: int
+    sid: int
 
 
 class JWTToken(BaseModel):
@@ -27,8 +28,8 @@ class JWTToken(BaseModel):
     access_token: str
 
 
-def create_jwt_token(user_id: str) -> JWTToken:
-    """create jwt based on time, expire sec, user_id"""
+def create_jwt_token(user_id: str, session_id: int) -> JWTToken:
+    """create jwt based on time, expire sec, user_id and auth session"""
     iat = int(time.time())
     exp = iat + get_settings().security.jwt_access_token_expire_secs
 
@@ -37,6 +38,7 @@ def create_jwt_token(user_id: str) -> JWTToken:
         sub=user_id,
         exp=exp,
         iat=iat,
+        sid=session_id,
     )
 
     access_token = jwt.encode(
@@ -74,4 +76,11 @@ def verify_jwt_token(token: str) -> JWTTokenPayload:
             detail=f"Token invalid: {e}",
         ) from e
 
-    return JWTTokenPayload(**raw_payload)
+    try:
+        return JWTTokenPayload(**raw_payload)
+    except ValidationError as e:
+        # tokens minted before the sid claim cannot be tied to a live session
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token invalid: malformed claims",
+        ) from e

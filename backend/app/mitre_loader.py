@@ -209,9 +209,8 @@ def load_attack_graph(mitre_path: Path, thg_cards_path: Path) -> AttackGraph:
                     ttps[ttp.mitre_id] = ttp
                     stix_to_ttp[obj["id"]] = ttp.mitre_id
 
-            elif obj_type == "relationship":
-                if obj.get("relationship_type") == "uses":
-                    uses_rels.append((obj["source_ref"], obj["target_ref"]))
+            elif obj_type == "relationship" and obj.get("relationship_type") == "uses":
+                uses_rels.append((obj["source_ref"], obj["target_ref"]))
 
     # link APTs to TTPs via "uses" relationships
     for src, tgt in uses_rels:

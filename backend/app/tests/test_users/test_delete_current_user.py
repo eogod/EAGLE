@@ -11,11 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.main import app
 from app.models import User
 
+pytestmark = pytest.mark.asyncio(loop_scope="session")
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_delete_current_user_status_code(
+
+async def test_delete_current_user_is_deleted_in_db(
     client: AsyncClient,
     default_user_headers: dict[str, str],
+    default_user: User,
+    session: AsyncSession,
 ) -> None:
     response = await client.delete(
         app.url_path_for("delete_current_user"),
@@ -23,20 +26,6 @@ async def test_delete_current_user_status_code(
     )
 
     assert response.status_code == status.HTTP_204_NO_CONTENT
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_delete_current_user_is_deleted_in_db(
-    client: AsyncClient,
-    default_user_headers: dict[str, str],
-    default_user: User,
-    session: AsyncSession,
-) -> None:
-    await client.delete(
-        app.url_path_for("delete_current_user"),
-        headers=default_user_headers,
-    )
-
     user = await session.scalar(
         select(User).where(User.user_id == default_user.user_id)
     )

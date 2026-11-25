@@ -1,14 +1,16 @@
 # EAGLE - Emulated Attack Generator w/ Layered Engine
 
-[Russian version](https://github.com/eogod/EAGLE/blob/main/docs/README-ru.md)
+[Russian version](docs/README-ru.md)
+
+[Architecture](docs/architecture.md)
 
 The Emulated Attack Generator with Layered Engine is an interactive system for building
 and executing realistic attack chains based on the [Unified Cyber Kill Chain](https://www.unifiedkillchain.com/) stages and supports the dynamic formation of attack chains in real
-time. It works in the context of an API that uses GraphQL and the Mythics library plus a minimal frontend.
+time. It talks to Mythic over GraphQL and ships with a minimal React frontend.
 
-The platform operates through a C2 infrastructure (Mythic C2 + agents, zero agent) and
-supports the generation of new agents during an attack, emulating Lateral movement and
-deep penetration into the infrastructure.
+The platform runs on a C2 infrastructure (Mythic C2 + agents, zero agent) and can generate
+new agents during an attack, emulating lateral movement and deeper access into the
+infrastructure.
 
 Commands that are executed locally are executed for the first stages of the chain only through zero agent.
 
@@ -19,11 +21,11 @@ The project is developed using `FastAPI` + `PostgreSQL` (`SQLAlchemy 2.0` + `ale
 So far, this has been tested on latest `Kali Linux` and `Parrot OS`. Debian, if the version is lower than 13, may need to build new python [from source](https://docs.python.org/3/using/unix.html#building-python
 ). The latest `Astra Linux` (Debian 10-12 with MAC policy) have the same problem, but for some reason install_docker_kali.sh works for the mythic, and it even considers the mythic and EAGLE containers secure. EAGLE itself can also work if mythic is on a remote host, zero agent is on another, and postgres is not in the container. On Windows, it is easiest to run it via `WSL2` on Ubuntu or Kali.
 
-The main requirement is `python3.13` and above.
+The main requirement is `python3.14` and above.
 
-If you decide not to deploy using Docker, you should use `PostgreSQL 17`.
+If you decide not to deploy using Docker, you should use `PostgreSQL 18`.
 
-The minimum RAM requirement is 4-8GB, but 16GB is recommended due to agents, profiles from Mythic C2, and zero agent itself.
+The minimum RAM requirement is 2-4GB, but 8GB is recommended due to agents, profiles from Mythic C2, and zero agent itself.
 A minimum dual-core CPU , but it 's difficult with containers.
 
 ## Installation 
@@ -57,86 +59,87 @@ MYTHIC__PASSWORD=super_secret_password
 MYTHIC__SERVER_PORT=7443
 MYTHIC__TIMEOUT=-1
 MYTHIC__PAYLOAD_PORT_HTTP=1337
+
+REDIS__PASSWORD=super_secret_password
+REDIS__PORT=6379
 ```
-If you need local LLM via [ollama](https://github.com/ollama/ollama) add to env also this. We recommend these models [Mistral](https://ollama.com/library/mistral), [Qwen3-ab](https://ollama.com/jaahas/qwen3-abliterated) , [llama3.1:8b](https://ollama.com/library/llama3.1), [llama3.1-ab:8b](https://ollama.com/mannix/llama3.1-8b-abliterated) (more freely), [Qwen2.5-coder:32b](https://ollama.com/library/qwen2.5-coder)  which depends on your resources.
+Valkey is configured through the `REDIS__*` variables (Redis protocol).
+If you need local LLM via [ollama](https://github.com/ollama/ollama) add to env also this. We recommend these models [qwen3.5 4-9b](https://ollama.com/library/qwen3.5), [qwen3.8 27b](https://ollama.com/library/qwen3.8), [gemma4](https://ollama.com/library/gemma4), [nemotron3.5](https://ollama.com/library/nemotron-3.5-lightning) which depends on your [resources](https://github.com/AlexsJones/llmfit).
 ```env
 LLMSERVICE__LOCAL=1
-LLMSERVICE__API_URL=http://localhost:69228
+LLMSERVICE__API_URL=http://localhost:11434
 LLMSERVICE__API_KEY=super_secret_key
 LLMSERVICE__TIMEOUT=120
-LLMSERVICE__DEFAULT_MODEL=mistral
+LLMSERVICE__DEFAULT_MODEL=qwen3.5
 ```
-Otherwise, the values will be taken from the [config](https://github.com/eogod/EAGLE/blob/main/backend/app/core/config.py), and you can see the validation there.
+Model choice reference: https://artificialanalysis.ai/models/open-source/small
+
+Otherwise, the values will be taken from the [config](backend/app/core/config.py), and you can see the validation there.
+
+OpenRouter is optional and only needs the key (and base URL if you proxy it):
+```env
+LLMSERVICE__OPENROUTER_API_KEY=sk-or-v1-...
+# LLMSERVICE__OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+```
 
 Install dependencies
 ```bash
-# Poetry install (python3.13)
+# Poetry 2.x on python3.14
 poetry install
-# or on debian / parrot
-python3.13 -m poetry install
+# or on debian / parrot / kali
+python3.14 -m poetry install
 ```
 If it throws an error (like on the kali 2023-2024), then it might help:
 ```bash
-python3 -m venv env
-source env/bin/activate
+python3.14 -m venv .venv
+source .venv/bin/activate
 # then the same as above
 ```
-Setup database and migrations 
+Start the database (PostgreSQL + Valkey) and run migrations
 ```bash
 # Setup database
-docker-compose up -d
+docker compose up -d
 
-python3.13 -m poetry shell
-
-# Run Alembic migrations for DB changes
-alembic upgrade head
+# poetry run executes inside the project venv
+poetry run alembic upgrade head
 ```
 Run backend FastAPI
 ```bash
-python3.13 -m poetry shell  # if you exited
-
-# not secure but for tests 
-uvicorn app.main:app --reload  --host 0.0.0.0 --port 8000
+# not secure but for tests
+poetry run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ## Usage
 
 By default, the application runs at **http://127.0.0.1:8000** and connects to `Mythic C2` on startup.
-At this URL you’ll find the API with a `Swagger UI`.  Frontend is on **/f/index** for now.
-Registration is available via **/auth/register** using email/password , this is required because AttackChains are attached to users by ID. After registering, you can log in and obtain a JWT token via **/auth/access-token** (or via Swagger auth).
-> Note that the login field is the email you used during registration.
+All three front doors below drive the same chains.
 
-Once authenticated, you can create a new attack chain with **/cmd/new-chain/**.
-A new chain with your specified name will be assigned an ID, which is used to attach steps to that chain.
-> For simplicity, utility names and their types are linked, a chain consists of individual steps, each connected to agents and containing information about the current attack phase.
+- **Web UI** - the React frontend at the root URL: chain building and execution (agent / local), LLM-assisted output analysis, the document-analysis agent panel. Agent edits and runs arrive as proposals and are applied or executed only after the operator approves them.
+- **MCP server** - a `/mcp` mount for MCP clients.
+- **Swagger / API** - `Swagger UI` at **/api/docs**.
 
-You can generate commands via the LLM, almost like a *pentest with LLM*.
-Currently, if a command not execute, it will not be saved to the database but LLM integration will be made more intuitive over time.
-
-The first commands are often Reconnaissance and run locally, so you need `Zero agent` and its `display_id`,
-which you include in requests to **/cmd/run-command**.
-If you may have made a mistake and any command was somewhy saved to the DB, you can reject the last saved command in the chain and delete it via **/cmd/reject-s/{chain_name}**
-
-You can briefly describe the task and generate the EAGLE command via `LLM` via POST **/llm/suggest-action** , then correct and finalize it if necessary and apply it via POST **/cmd/approve-action** specifying some service data as agent_id (same as display id) . When making an suggestion, the `AI` considers the current phase of the kill chain, the values of the most recent commands/steps (like status and output), the current chain, and then attempts to suggest potentially effective attack vectors and command, target os.
-
-For agent-specific commands, use **/cmd/run-agent-command**, also specifying the agent utility name, for local it's set as `shell`.
-Commands executed this way are immediately saved to the chain, 
-you can use the LLM to assist with command generation and output analysis.
-> Note that the LLM does not write directly to the database and LLM decisions are user-driven.
-
-You can create payloads via the LLM and route them through proc, 
-then run **/cmd/update-agents** to save remote agents in the database for reproducibility of the chain. If the task needs more precise adjustments, or the LLM makes a mistake somewhere, you should use **/cmd/new-agent** for create mythic payload via EAGLE in context of chain, then **/cmd/run-command** for uploading payload to the rhost and then also **/cmd/update-agents** .
-
-You can set attack phases with **/cmd/next-phase/{chain_id}**
-or set a specific phase via **/cmd/set-phase/{chain_id}**.
-Chain status can be retrieved with **/cmd/chain-phase/{chain_id}**.
-> Note that if, for example, you uploaded a payload via a curl command using Mythic payload UUID, it will remain the old payload during replay because the agent-type attack step has already stored the original payload. This is done for simplicity and is one example of why our project’s stability depends on Mythic’s stability; you still need to use Mythic to some extent. *Profiles* for agent payloads are also created before run EAGLE.
-
-To run chain, use **/cmd/run-chain/{chain_id}**, which streams each step’s output as HTTP chunks.
-Emergency stop is available via WebSocket or HTTP cancel endpoints.
-For convenience and stability, a minimal frontend is provided at **/f/index**, offering command execution ( agent / local ),
-LLM-assisted output analysis, and chain management.
-
-Export a chain (with or without LLM analysis) via **/export-chain/json** or **/export-chain/yaml** to `JSON` or `YAML`.
+Chains, phases, LLM suggestions, direct bash on the host, chain export, the MCP key and the cookie / bearer setup are described in [docs/usage.md](docs/usage.md).
 
 Similar to how diving into [Mythic python library](https://github.com/MythicMeta/Mythic_Scripting/blob/master/mythic/mythic.py) source code clarifies its functionality, examining the other Swagger endpoints and read `EAGLE` codebase provides deeper insight into using it effectively. If anything is unclear, write it in the [issues](https://github.com/eogod/EAGLE/issues) section.
+
+## Tests
+
+Backend tests run on a throwaway SQLite database by default (`poetry run pytest` from `backend/`); set `EAGLE_TEST_DB=postgres` to run them against a real Postgres. Frontend checks: `bun run check && bun run build`.
+
+## TODO
+
+A full scenario run still needs these larger pieces. The smaller ones are marked with `# TODO` in the code.
+
+- **/import-chain** should read the same `JSON` / `YAML` that **/export-chain** writes and create planned steps. A separate run record would keep the plan apart from each execution, so a replay appends history instead of overwriting `AttackStep`.
+
+- A chain should declare variables, capture values from `raw_log` with a regex or JSONPath, and substitute them into later commands. This covers hostnames, ports, artifact names and keys that change between runs.
+
+- Listeners and tunnels need start, stop and health checks that outlive one step. Interactive tools need a driver that sends a line and waits for the prompt.
+
+- A step should declare which agent or tunnel carries its traffic, and the runner should check the route and source address before it executes.
+
+- Upload and download steps, an artifact registry with hashes and a naming policy, and local build recipes with a pinned toolchain are still missing. Mythic payloads are the only build path today.
+
+- A run manifest should export the run id, timings, artifacts and assertion results. Optional post-run checks can query external telemetry and record the outcome.
+
+- Independent services and scans should run concurrently, and each step should choose whether a failure stops the chain, retries or jumps to a fallback.

@@ -1,0 +1,69 @@
+{
+  "//": "What the frontend depends on. backend/app/tests/test_api_contract.py fails when the API stops matching this file.",
+  "endpoints": [
+    { "method": "post", "path": "/api/agent/sessions/{session_id}/messages" },
+    { "method": "get", "path": "/api/agent/sessions/{session_id}/proposals" },
+    { "method": "get", "path": "/api/agent/sessions/{session_id}/proposals/{public_id}" },
+    { "method": "post", "path": "/api/agent/sessions/{session_id}/proposals/{public_id}/approve" },
+    { "method": "post", "path": "/api/agent/sessions/{session_id}/proposals/{public_id}/apply" },
+    { "method": "post", "path": "/api/agent/sessions/{session_id}/proposals/{public_id}/reject" },
+    { "method": "post", "path": "/api/agent/sessions/{session_id}/proposals/{public_id}/execute" },
+    { "method": "post", "path": "/api/agent/drafts/{draft_id}/import" },
+    { "method": "post", "path": "/api/cmd/chain/{chain_id}/draft-steps" },
+    { "method": "patch", "path": "/api/cmd/chain/{chain_id}/draft-steps/{step_id}" },
+    { "method": "delete", "path": "/api/cmd/chain/{chain_id}/draft-steps/{step_id}" },
+    { "method": "post", "path": "/api/cmd/steps/{step_id}/run" },
+    { "method": "get", "path": "/api/cmd/step/{step_id}" },
+    { "method": "patch", "path": "/api/cmd/step/{step_id}" },
+    { "method": "delete", "path": "/api/cmd/step/{step_id}" },
+    { "method": "patch", "path": "/api/cmd/chain/{chain_id}/delay" }
+  ],
+  "responses": {
+    "AgentProposalOut": [
+      "public_id",
+      "kind",
+      "status",
+      "summary",
+      "operations",
+      "validation",
+      "expires_at",
+      "base_fingerprint",
+      "result",
+      "error",
+      "can_approve",
+      "can_apply",
+      "can_execute"
+    ],
+    "AttackStepResponse": [
+      "id",
+      "is_draft",
+      "phase",
+      "step_type",
+      "tool_name",
+      "command",
+      "status",
+      "raw_log",
+      "delay_before_secs",
+      "delay_reason",
+      "delay_enabled"
+    ]
+  },
+  "requests": {
+    "AgentMessageIn": ["content", "document_id", "provider", "model", "mode"],
+    "ProposalApproveIn": ["acknowledge_dangerous"],
+    "ProposalApplyIn": ["acknowledge_dangerous"],
+    "ProposalRejectIn": ["reason"],
+    "ProposalExecuteIn": ["acknowledge_dangerous"],
+    "DraftStepCreate": ["phase", "step_type", "tool_name", "command", "delay_before_secs"],
+    "StepUpdate": [
+      "phase",
+      "step_type",
+      "tool_name",
+      "command",
+      "delay_before_secs",
+      "delay_reason",
+      "delay_enabled"
+    ],
+    "RunStepRequest": ["expected_step_fingerprint"]
+  }
+}

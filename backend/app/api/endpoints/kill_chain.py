@@ -14,11 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
-from app.cmd.llm_analysis import llm_service
 from app.core.llm_templ import LLMTemplates
 from app.models import AttackChain, AttackStep, User
+from app.services.llm_service import llm_service
 
 router = APIRouter()
+
+# TODO: add POST /import-chain that reads this export format back into planned steps.
 
 
 def result_to_dict_recursive(
@@ -42,6 +44,9 @@ def result_to_dict_recursive(
 
     ins = inspect(instance)
     data = {}
+
+    if ins is None:
+        raise ValueError("to dict instance is None")
 
     for column in ins.mapper.column_attrs:
         value = getattr(instance, column.key)
@@ -164,3 +169,6 @@ async def export_yaml(
             "Content-Disposition": f"attachment; filename=export_{chain_name}.yaml"
         },
     )
+
+
+# TODO: export a run manifest too: run id, timings, artifacts and assertion results.

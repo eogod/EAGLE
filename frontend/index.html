@@ -1,70 +1,13 @@
-<!DOCTYPE html>
-<html>
-    <head>
-        <title>EAGLE test</title>
-        <script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
-        <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-        <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
-    </head>
-    <body>
-        <h1 class="text-3xl font-bold text-center">EAGLE</h1>
-        <div class="flex flex-wrap items-start justify-center p-4">
-            <div class="bg-gray-200 rounded-lg w-full max-w-2xl ml-auto p-2">
-                <div class="p-2">
-                    <h2 class="text-2xl font-bold mb-4 text-gray-800">Login</h2>
-                    <form id="loginForm" class="space-y-4 mb-6">
-                        <input type="email" id="email" placeholder="Email" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="password" id="password" placeholder="Password" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-md transition duration-300 active:scale-95">Login</button>
-                    </form>
-                    <hr class="my-6 border-gray-300"/>
-
-                    <h2 class="text-2xl font-bold mb-4 text-gray-800">Run Local Command</h2>
-                    <form id="commandForm" style="display:none;" class="space-y-4 mb-6">
-                        <input type="text" id="chainName" placeholder="Chain Name" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="text" id="command" placeholder="Command" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="text" id="callbackDisplayId" placeholder="Callback Display ID" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <button type="submit" class="bg-green-400 hover:bg-green-600 text-white font-medium py-2 px-4 rounded-md transition duration-300 active:scale-90">Run Command</button>
-                    </form>
-
-                    <h2 class="text-2xl font-bold mb-4 text-gray-800">Run Command on agent</h2>
-                    <form id="agentCommandForm" style="display:none;" class="space-y-4 mb-6">
-                        <input type="text" id="chainName" placeholder="Chain Name" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="text" id="tool" placeholder="Tool name" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="text" id="command_agent" placeholder="Command params" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="text" id="callbackDisplayId" placeholder="Callback Display ID" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <button type="submit" class="bg-green-400 hover:bg-green-600 text-white font-medium py-2 px-4 rounded-md transition duration-300 active:scale-90">Run Command</button>
-                    </form>
-
-                    <h2 class="text-2xl font-bold mb-4 text-gray-800">Run attack chain from DB</h2>
-                    <hr class="my-6 border-gray-300"/>
-
-                    <form id="runChainForm" style="display:none;" class="space-y-4 mb-6">
-                        <input type="number" id="chainId" placeholder="chain id" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="number" id="zeroDisplayId" placeholder="Zero Display ID" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <input type="text" id="chainName" placeholder="chain name" required class="w-full px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <button type="submit" class="bg-green-400 hover:bg-green-600 text-white font-medium py-2 px-4 rounded-md transition duration-300 active:scale-90">Run chain</button>
-                    </form>
-
-                    <hr class="my-6 border-gray-300"/>
-
-                    <button id="emergencyCancelBtn" style="display:none;" class="bg-red-400 hover:bg-red-600 text-white font-medium py-2 px-4 rounded-md transition duration-300 mb-6 active:scale-90">Stop chain</button>
-                </div>
-            </div>
-            <div class="flex-grow ml-auto p-10  overflow-x-auto max-w-[1200px]">
-                <h3>Result log of commands</h3>
-                <div id="result" class="p-4 bg-gray-100 rounded-md mb-6  overflow-y-auto" style="max-height: 1000pt;"></div>
-
-                <h3>Result of agent commands</h3>
-                <div id="result_agent" class="p-4 bg-gray-100 rounded-md mb-6 overflow-y-auto" style="max-height: 1000pt;"></div>
-
-
-                <hr class="my-6 border-gray-300"/>
-
-                <h3>Result of chain steps commands</h3>
-                <div id="chainOutput" class="p-4 bg-gray-100 rounded-md overflow-y-auto" style="max-height: 1000pt;"></div>
-            </div>
-        </div>
-        <script src="/static/script.js"></script>
-    </body>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EAGLE</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>
