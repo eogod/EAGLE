@@ -394,6 +394,8 @@ def _to_text(data: bytes, content_type: str) -> str:
         tag.decompose()
 
     page = str(soup)
+    # the soup tree is cyclic and `page` is all that survives, so drop it now
+    soup.decompose()
     extracted = ""
     if Document is not None:
         try:
@@ -461,7 +463,8 @@ async def fetch_url(
     hit = _cache_get(normalized, cfg)
     if hit is None:
         data, content_type, final, capped = await _guarded_get(normalized, cfg)
-        text = _to_text(data, content_type)
+        # parsing html to markdown is cpu work; a big page would stall the loop
+        text = await asyncio.to_thread(_to_text, data, content_type)
         # key = requested url (what the next lookup uses), value keeps the
         # post-redirect url so callers still see where they landed
         _cache_put(normalized, (final, text, content_type, capped), cfg)
