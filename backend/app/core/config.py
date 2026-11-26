@@ -96,6 +96,8 @@ class LLMservice(BaseModel):
     """env format like LLMSERVICE__API_URL=http..."""
 
     local: int = 0
+    # the free providers pull a heavy import, so they wait for opt-in
+    g4f: int = 0
     # standard Ollama port; override with LLMSERVICE__API_URL when proxied
     api_url: HttpUrl = HttpUrl("http://localhost:11434")
     api_key: str | None = None

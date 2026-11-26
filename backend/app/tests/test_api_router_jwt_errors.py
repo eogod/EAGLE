@@ -19,7 +19,6 @@ from app.cmd.mythic_events import MythicEventsService
 from app.core.security.jwt import create_jwt_token
 from app.main import app
 from app.models import User
-from app.services import llm_service
 
 # only /api routes count, auth router itself is public
 _SKIP_PREFIXES = (
@@ -61,12 +60,6 @@ def _protected_method_paths() -> list[tuple[str, str]]:
 
 # walk must not miss everything, fails loud if fastapi changes shape again
 assert _protected_method_paths(), "effective route walk found no api routes"
-
-
-@pytest.fixture(autouse=True)
-def fixture_stub_g4f_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
-    """the route walk only checks auth; g4f's live catalog is network data"""
-    monkeypatch.setattr(llm_service, "g4f_text_models", lambda: [])
 
 
 @pytest_asyncio.fixture(autouse=True, scope="module")

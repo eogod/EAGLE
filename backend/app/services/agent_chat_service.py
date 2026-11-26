@@ -47,7 +47,7 @@ class AgentChatService:
 
     def llm_providers(self) -> dict[str, str]:
         """registered g4f provider classes for the chain-work LLM path"""
-        return {name: p.__name__ for name, p in llm_service.providers.items()}
+        return llm_service.provider_names()
 
     async def query_llm(self, prompt: str, provider_name: str | None = None) -> str:
         return await llm_service.query_llm(prompt, provider_name)

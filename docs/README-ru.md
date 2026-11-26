@@ -99,6 +99,12 @@ LLMSERVICE__OPENROUTER_API_KEY=sk-or-v1-...
 # LLMSERVICE__OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 ```
 
+Бесплатные провайдеры g4f выключены по умолчанию и импортируются только при включении. Пока они
+выключены, цепочные LLM-вызовы и провайдер `g4f` в панели агента недоступны:
+```env
+LLMSERVICE__G4F=1
+```
+
 Установка зависимостей
 ```bash
 # Poetry 2.x на python3.14
