@@ -21,6 +21,31 @@ def session_expiry() -> int:
     return int(time.time() + get_settings().security.refresh_token_expire_secs)
 
 
+async def active_user_session(
+    session: AsyncSession,
+    session_id: int,
+    user_id: str,
+    *,
+    now: int | None = None,
+) -> tuple[User, AuthSession] | None:
+    """deps and the stream guards both ask here, so the rule is written once"""
+    current = int(time.time()) if now is None else now
+    row = (
+        await session.execute(
+            select(User, AuthSession)
+            .join(AuthSession, AuthSession.user_id == User.user_id)
+            .where(
+                AuthSession.id == session_id,
+                AuthSession.user_id == user_id,
+                AuthSession.revoked_at.is_(None),
+                AuthSession.expires_at > current,
+                User.is_active.is_(True),
+            )
+        )
+    ).first()
+    return (row[0], row[1]) if row is not None else None
+
+
 async def active_session(
     session: AsyncSession,
     session_id: int,
@@ -28,18 +53,8 @@ async def active_session(
     *,
     now: int | None = None,
 ) -> AuthSession | None:
-    current = int(time.time()) if now is None else now
-    return await session.scalar(
-        select(AuthSession)
-        .join(User, AuthSession.user_id == User.user_id)
-        .where(
-            AuthSession.id == session_id,
-            AuthSession.user_id == user_id,
-            AuthSession.revoked_at.is_(None),
-            AuthSession.expires_at > current,
-            User.is_active.is_(True),
-        )
-    )
+    found = await active_user_session(session, session_id, user_id, now=now)
+    return found[1] if found is not None else None
 
 
 async def revoke_session(session: AsyncSession, auth_session: AuthSession) -> None:

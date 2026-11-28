@@ -11,7 +11,6 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import api_messages
@@ -21,7 +20,7 @@ from app.models import User
 from app.services.agent_chat_service import AgentChatService
 from app.services.agent_document_service import AgentDocumentService
 from app.services.agent_draft_service import AgentDraftService
-from app.services.auth_sessions import active_session
+from app.services.auth_sessions import active_user_session
 from app.services.chain_proposal_service import ChainProposalService
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/access-token", auto_error=False)
@@ -96,25 +95,16 @@ async def get_current_user(
         )
     token_payload = verify_jwt_token(token)
 
-    query = select(User).where(
-        User.user_id == token_payload.sub, User.is_active.is_(True)
-    )
-    user = await session.scalar(query)
-
-    if user is None:
+    # the session row is part of the lookup, so a revoked or expired login stops
+    # working on the next request
+    found = await active_user_session(session, token_payload.sid, token_payload.sub)
+    if found is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=api_messages.JWT_ERROR_USER_REMOVED,
         )
 
-    # a revoked session must 401 on the next request, not after the jwt expires
-    auth_session = await active_session(session, token_payload.sid, token_payload.sub)
-    if auth_session is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=api_messages.JWT_ERROR_USER_REMOVED,
-        )
-
+    user, auth_session = found
     request.state.auth_session_id = auth_session.id
     request.state.auth_user_id = user.user_id
     return user

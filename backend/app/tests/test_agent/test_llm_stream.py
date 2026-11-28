@@ -1,11 +1,14 @@
 """Provider adapters: verify wire parsing, config errors and failure mapping."""
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
+from pydantic import HttpUrl
 
+import app.services.llm_service as llm_module
 from app.core.config import LLMservice
 from app.services.llm_service import (
     AgentLLMError,
@@ -23,6 +26,7 @@ from app.services.llm_service import (
     _rank_openrouter_models,
     _text_chat_models,
     build_provider,
+    list_models,
 )
 
 MESSAGES: list[dict[str, Any]] = [{"role": "user", "content": "hello"}]
@@ -62,7 +66,23 @@ def test_ollama_content_shapes():
     assert _ollama_content(object()) == ""
 
 
-def test_build_provider_dispatch():
+class _FakeModels:
+    default = "default"
+    Model = dict
+
+
+class _FakeG4F:
+    models = _FakeModels
+
+
+def _stub_g4f(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dispatch only needs a module object, so the real g4f stays unimported"""
+    monkeypatch.setattr(
+        llm_module, "_g4f_state", SimpleNamespace(module=_FakeG4F, client=object())
+    )
+
+
+def test_build_provider_dispatch(monkeypatch: pytest.MonkeyPatch):
     assert isinstance(build_provider(LLMservice()), OllamaProvider)
     with pytest.raises(ProviderNotConfigured):
         build_provider(LLMservice(openrouter_api_key=None), provider="openrouter")
@@ -70,9 +90,44 @@ def test_build_provider_dispatch():
         build_provider(
             LLMservice(openrouter_api_key="sk-or-v1-x"), provider="openrouter"
         )
-    assert isinstance(build_provider(LLMservice(), provider="g4f"), G4FProvider)
+    # off by default, so neither startup nor an agent run imports g4f
+    with pytest.raises(ProviderNotConfigured):
+        build_provider(LLMservice(), provider="g4f")
+
+    _stub_g4f(monkeypatch)
+    assert isinstance(build_provider(LLMservice(g4f=1), provider="g4f"), G4FProvider)
     with pytest.raises(ProviderNotConfigured):
         build_provider(LLMservice(), provider="nope")
+
+
+@pytest.mark.asyncio
+async def test_list_models_caches_discovery(monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+
+    async def fake_ollama(_cfg: LLMservice) -> dict[str, Any]:
+        calls.append("ollama")
+        return {"available": True, "models": ["m"], "default": "m", "error": None}
+
+    async def fake_openrouter(_cfg: LLMservice) -> dict[str, Any]:
+        calls.append("openrouter")
+        return {"available": True, "models": [], "default": "", "error": None}
+
+    clock = [0.0]
+    monkeypatch.setattr(llm_module, "_ollama_models", fake_ollama)
+    monkeypatch.setattr(llm_module, "_openrouter_models", fake_openrouter)
+    monkeypatch.setattr(llm_module, "_model_list_cache", llm_module._ModelListCache())
+    monkeypatch.setattr(llm_module, "monotonic", lambda: clock[0])
+
+    cfg = LLMservice()
+    first = await list_models(cfg)
+    assert await list_models(cfg) is first
+    assert calls == ["ollama", "openrouter"]
+
+    other = LLMservice(api_url=HttpUrl("http://other:11434"))
+    assert await list_models(other) is not first
+    clock[0] = llm_module._MODEL_LIST_TTL + 1
+    await list_models(cfg)
+    assert calls.count("ollama") == 3
 
 
 @pytest.mark.asyncio

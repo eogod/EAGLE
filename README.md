@@ -82,6 +82,12 @@ LLMSERVICE__OPENROUTER_API_KEY=sk-or-v1-...
 # LLMSERVICE__OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 ```
 
+The g4f free providers are off by default and only imported when switched on. While they are off,
+the chain-work LLM calls and the `g4f` provider in the agent panel are unavailable:
+```env
+LLMSERVICE__G4F=1
+```
+
 Install dependencies
 ```bash
 # Poetry 2.x on python3.14

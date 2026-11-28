@@ -1,18 +1,18 @@
 """LLM access for the app: the chain-work pool plus the streaming agent providers"""
 
+import asyncio
 import inspect
 import json
 import os
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from logging import getLogger
+from time import monotonic
 from typing import Any, Protocol, runtime_checkable
 
-import g4f
 import httpx
 from dotenv import load_dotenv
 from fastapi import HTTPException
-from g4f.client import AsyncClient
 from ollama import AsyncClient as OllamaAsyncClient
 from pydantic import SecretStr
 
@@ -22,11 +22,11 @@ from app.core.config import (
     AGENT_TIMEOUT,
     OPENROUTER_REFERER,
     LLMservice,
+    get_settings,
 )
 from app.core.llm_templ import LLMTemplates
 
 logger = getLogger(__name__)
-g4f.debug.logging = False
 
 load_dotenv()
 IS_LOCAL_LLM: int = int(os.getenv("LLMSERVICE__LOCAL", "0") or "0")
@@ -38,17 +38,26 @@ if IS_LOCAL_LLM == 1:
 else:
     client_ollama = None
 
-client_g4f = AsyncClient()
-
 
 class LLMService:
-    def __init__(self):
-        self.providers = {
-            "perplexity": g4f.Provider.Perplexity,
-            "yqcloud": g4f.Provider.Yqcloud,
-            "huggingspace": g4f.Provider.HuggingSpace,
-            "kilocode": g4f.Provider.KiloCode,
+    def _providers(self, enabled: bool) -> dict[str, Any]:
+        module = _g4f_module(enabled)
+
+        return {
+            "perplexity": module.Provider.Perplexity,
+            "yqcloud": module.Provider.Yqcloud,
+            "huggingspace": module.Provider.HuggingSpace,
+            "kilocode": module.Provider.KiloCode,
         }
+
+    def provider_names(self) -> dict[str, str]:
+        try:
+            providers = self._providers(g4f_enabled())
+        except ProviderNotConfigured:
+            # an empty pool still renders the page while the free providers are off
+            return {}
+
+        return {name: cls.__name__ for name, cls in providers.items()}
 
     async def query_llm(self, prompt: str, provider_name: str | None = None) -> str:
         """
@@ -114,11 +123,16 @@ class LLMService:
 
     async def _g4f_llm(self, prompt: str, provider_name: str | None) -> str:
         """Query g4f; auto-routes via AnyProvider if no provider specified."""
-        if provider_name and provider_name in self.providers:
-            provider = self.providers[provider_name]
+        enabled = g4f_enabled()
+        module = _g4f_module(enabled)
+        client = _g4f_client(enabled)
+        providers = self._providers(enabled)
+
+        if provider_name and provider_name in providers:
+            provider = providers[provider_name]
             try:
-                response = await client_g4f.chat.completions.create(
-                    model=g4f.models.default,
+                response = await client.chat.completions.create(
+                    model=module.models.default,
                     messages=[{"role": "user", "content": prompt}],
                     provider=provider,
                 )
@@ -129,10 +143,10 @@ class LLMService:
                     detail=f"Provider {provider_name} failed: {str(e)}",
                 ) from e
 
-        for _, provider in self.providers.items():
+        for _, provider in providers.items():
             try:
-                response = await client_g4f.chat.completions.create(
-                    model=g4f.models.default,
+                response = await client.chat.completions.create(
+                    model=module.models.default,
                     messages=[{"role": "user", "content": prompt}],
                     provider=provider,
                 )
@@ -149,11 +163,16 @@ class LLMService:
         self, messages: list[dict[str, Any]], provider_name: str | None
     ) -> str:
         """Query g4f with message history."""
-        if provider_name and provider_name in self.providers:
-            provider = self.providers[provider_name]
+        enabled = g4f_enabled()
+        module = _g4f_module(enabled)
+        client = _g4f_client(enabled)
+        providers = self._providers(enabled)
+
+        if provider_name and provider_name in providers:
+            provider = providers[provider_name]
             try:
-                response = await client_g4f.chat.completions.create(
-                    model=g4f.models.default,
+                response = await client.chat.completions.create(
+                    model=module.models.default,
                     messages=messages,
                     provider=provider,
                 )
@@ -164,10 +183,10 @@ class LLMService:
                     detail=f"Provider {provider_name} failed: {str(e)}",
                 ) from e
 
-        for _, provider in self.providers.items():
+        for _, provider in providers.items():
             try:
-                response = await client_g4f.chat.completions.create(
-                    model=g4f.models.default,
+                response = await client.chat.completions.create(
+                    model=module.models.default,
                     messages=messages,
                     provider=provider,
                 )
@@ -211,8 +230,39 @@ _STATUS_HINTS = {
     429: "rate limited",
 }
 _MODEL_LIST_TIMEOUT = 8
+# discovery hits two providers over the network; the panel reopens often
+_MODEL_LIST_TTL = 60.0
 _OPENROUTER_MODEL_LIMIT = 250
 _G4F_MODEL_LIMIT = 120
+
+
+@dataclass
+class _ModelListCache:
+    # keyed by endpoints: a result is only true for the config that asked
+    key: tuple[str, str, bool] | None = None
+    until: float = 0.0
+    payload: dict[str, dict[str, Any]] | None = None
+
+
+class _LoopLock:
+    """an asyncio lock binds to the loop that first contends on it, so hold one per loop"""
+
+    def __init__(self) -> None:
+        self.lock: asyncio.Lock | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    def for_running_loop(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self.lock is None or self.loop is not loop:
+            self.lock = asyncio.Lock()
+            self.loop = loop
+
+        return self.lock
+
+
+_model_list_cache = _ModelListCache()
+# a cold panel in two tabs should cost one discovery round
+_model_list_guard = _LoopLock()
 
 
 class AgentLLMError(RuntimeError):
@@ -221,6 +271,47 @@ class AgentLLMError(RuntimeError):
 
 class ProviderNotConfigured(AgentLLMError):
     pass
+
+
+@dataclass
+class _G4FState:
+    module: Any = None
+    client: Any = None
+
+
+_g4f_state = _G4FState()
+
+
+def g4f_enabled() -> bool:
+    """the chain-work path never gets a cfg, so it reads the process settings"""
+    return bool(get_settings().llmservice.g4f)
+
+
+def _g4f_module(enabled: bool) -> Any:
+    """imported on first use: the package is heavy and most setups never touch it"""
+    if not enabled:
+        raise ProviderNotConfigured(
+            "g4f is disabled; set LLMSERVICE__G4F=1 to use the free providers"
+        )
+    if _g4f_state.module is None:
+        try:
+            import g4f  # noqa: PLC0415
+        except ImportError as exc:
+            raise ProviderNotConfigured("g4f is not installed") from exc
+        g4f.debug.logging = False
+        _g4f_state.module = g4f
+
+    return _g4f_state.module
+
+
+def _g4f_client(enabled: bool) -> Any:
+    _g4f_module(enabled)
+    if _g4f_state.client is None:
+        from g4f.client import AsyncClient  # noqa: PLC0415
+
+        _g4f_state.client = AsyncClient()
+
+    return _g4f_state.client
 
 
 @dataclass(frozen=True)
@@ -715,7 +806,8 @@ class G4FProvider(BaseProvider):
 
     def __init__(self, cfg: LLMservice, model: str | None = None) -> None:
         self.model = model or "default"
-        self._g4f_model = g4f_model(self.model)
+        self._enabled = bool(cfg.g4f)
+        self._g4f_model = g4f_model(self.model, enabled=self._enabled)
         self.temperature = AGENT_TEMPERATURE
 
     def stream(
@@ -723,7 +815,7 @@ class G4FProvider(BaseProvider):
     ) -> AsyncIterator[str]:
         async def gen() -> AsyncIterator[str]:
             try:
-                result = client_g4f.chat.completions.create(
+                result = _g4f_client(self._enabled).chat.completions.create(
                     model=self._g4f_model,
                     messages=messages,
                     stream=True,
@@ -757,6 +849,9 @@ def build_provider(
     if name in {"openrouter", "openai", "openai-compatible"}:
         return OpenRouterProvider(cfg, model=model)
     if name == "g4f":
+        # fail at dispatch, not mid-stream, when the free providers are switched off
+        _g4f_module(bool(cfg.g4f))
+
         return G4FProvider(cfg, model=model)
 
     raise ProviderNotConfigured(
@@ -764,50 +859,90 @@ def build_provider(
     )
 
 
-def g4f_text_models() -> list[str]:
+def g4f_text_models(*, enabled: bool) -> list[str]:
     """text models only; image/video/audio models cannot answer a chain request."""
+    models = _g4f_module(enabled).models
     names: list[str] = []
-    for attr in dir(g4f.models):
+    for attr in dir(models):
         if attr.startswith("_"):
             continue
-        value = getattr(g4f.models, attr)
-        if not isinstance(value, g4f.models.Model):
+        value = getattr(models, attr)
+        if not isinstance(value, models.Model):
             continue
-        if isinstance(
-            value,
-            g4f.models.ImageModel | g4f.models.VideoModel | g4f.models.AudioModel,
-        ):
+        if isinstance(value, models.ImageModel | models.VideoModel | models.AudioModel):
             continue
         names.append(attr)
 
     return sorted(names)[:_G4F_MODEL_LIMIT]
 
 
-def g4f_model(name: str | None) -> Any:
+def g4f_model(name: str | None, *, enabled: bool) -> Any:
+    models = _g4f_module(enabled).models
     if not name:
-        return g4f.models.default
-    candidate = getattr(g4f.models, name, None)
-    return candidate if isinstance(candidate, g4f.models.Model) else g4f.models.default
+        return models.default
+    candidate = getattr(models, name, None)
+    return candidate if isinstance(candidate, models.Model) else models.default
+
+
+def g4f_catalog(*, enabled: bool) -> dict[str, Any]:
+    """the panel's g4f row, without paying its import while it is switched off"""
+    if not enabled:
+        return {
+            "available": False,
+            "models": [],
+            "default": "",
+            "error": "disabled (LLMSERVICE__G4F=1 turns it on)",
+        }
+
+    try:
+        models = g4f_text_models(enabled=enabled)
+    except ProviderNotConfigured as exc:
+        return {"available": False, "models": [], "default": "", "error": str(exc)}
+
+    return {
+        "available": True,
+        "models": models,
+        "default": "default" if "default" in models else (models[0] if models else ""),
+        "error": None,
+    }
+
+
+def _cached_model_list(key: tuple[str, str, bool]) -> dict[str, dict[str, Any]] | None:
+    if _model_list_cache.key == key and _model_list_cache.until > monotonic():
+        return _model_list_cache.payload
+    return None
 
 
 async def list_models(cfg: LLMservice) -> dict[str, dict[str, Any]]:
     """best-effort discovery; a dead provider reports itself, it does not fail the page."""
-    ollama = await _ollama_models(cfg)
-    openrouter = await _openrouter_models(cfg)
-    g4f_models = g4f_text_models()
+    key = (
+        str(cfg.api_url).rstrip("/"),
+        cfg.openrouter_base_url.rstrip("/"),
+        bool(cfg.g4f),
+    )
+    cached = _cached_model_list(key)
+    if cached is not None:
+        return cached
 
-    return {
-        "ollama": ollama,
-        "openrouter": openrouter,
-        "g4f": {
-            "available": True,
-            "models": g4f_models,
-            "default": "default"
-            if "default" in g4f_models
-            else (g4f_models[0] if g4f_models else ""),
-            "error": None,
-        },
-    }
+    async with _model_list_guard.for_running_loop():
+        cached = _cached_model_list(key)
+        if cached is not None:
+            return cached
+
+        ollama, openrouter = await asyncio.gather(
+            _ollama_models(cfg), _openrouter_models(cfg)
+        )
+        payload = {
+            "ollama": ollama,
+            "openrouter": openrouter,
+            "g4f": g4f_catalog(enabled=bool(cfg.g4f)),
+        }
+        _model_list_cache.key = key
+        _model_list_cache.payload = payload
+        # ttl starts after the fetches so a slow discovery does not eat it
+        _model_list_cache.until = monotonic() + _MODEL_LIST_TTL
+
+        return payload
 
 
 async def _ollama_models(cfg: LLMservice) -> dict[str, Any]:
